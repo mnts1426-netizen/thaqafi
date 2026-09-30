@@ -446,6 +446,8 @@ function render() {
     default:
       renderHub(container);
   }
+  // يحفظ تقدّم المباراة الجارية (أو يمسح المحفوظ إن انتهت) في كل مرة تُرسم الصفحة - يحمي من فقدان المباراة لو انكسر الجهاز
+  savePendingMatch(activeStageId, pendingMatch);
 }
 
 /* ================= الشاشة الافتتاحية ================= */
@@ -612,7 +614,7 @@ function renderTopbar() {
   bar.className = "topbar";
   bar.innerHTML = `
     <button class="brand" id="btnBrandHome" title="الرئيسية">
-      <img src="assets/logo-white.png" alt="" class="brand-logo" />
+      <img src="assets/logo.png" alt="" class="brand-logo" />
       <span>الدوري الثقافي</span>
     </button>
     <div class="topbar-actions">
@@ -1209,47 +1211,10 @@ function renderCards(container) {
   if (cardsSubView === "discipline") {
     const card = document.createElement("div");
     card.className = "card";
-    card.innerHTML = `<h3>🟨🟥 البطاقات التأديبية</h3>`;
-    const yRow = document.createElement("div");
-    yRow.className = "item-row";
-    yRow.innerHTML = `<div>🟨 إنذار شفوي — عدد الإنذارات: <b>${team.yellowCards}</b></div><button class="btn btn-gold">تسجيل إنذار</button>`;
-    yRow.querySelector("button").onclick = () =>
-      confirmModal({
-        icon: "🟨",
-        title: `تسجيل إنذار لفريق ${team.name}؟`,
-        confirmLabel: "تسجيل الإنذار",
-        onConfirm: () => {
-          team.yellowCards++;
-          team.cardLog.push({ at: nowISO(), text: "🟨 إنذار شفوي" });
-          persist();
-          render();
-        },
-      });
-    card.appendChild(yRow);
-
-    const rRow = document.createElement("div");
-    rRow.className = "item-row";
-    rRow.innerHTML = `<div>🟥 كرت أحمر — عدد الكروت الحمراء: <b>${team.redCards}</b>
-      <div class="shop-meta">عند التسجيل: تُمنح بقية الفرق ${CONFIG.redCardBonusForOthers} نقطة لكل فريق</div></div>
-      <button class="btn btn-danger">تسجيل كرت أحمر</button>`;
-    rRow.querySelector("button").onclick = () =>
-      confirmModal({
-        icon: "🟥",
-        title: `كرت أحمر لفريق ${team.name}؟`,
-        message: `سيُمنح كل فريق آخر ${CONFIG.redCardBonusForOthers} نقطة في رصيده.`,
-        confirmLabel: "تسجيل الكرت الأحمر",
-        danger: true,
-        onConfirm: () => {
-          team.redCards++;
-          stage().teams.forEach((t) => {
-            if (t.id !== team.id) t.balance += CONFIG.redCardBonusForOthers;
-          });
-          team.cardLog.push({ at: nowISO(), text: "🟥 كرت أحمر" });
-          persist();
-          render();
-        },
-      });
-    card.appendChild(rRow);
+    card.innerHTML = `<h3>🟨🟥 البطاقات التأديبية</h3>
+      <p class="small-note">تُسجَّل فقط من داخل المباراة المباشرة (مرة واحدة من كل نوع لكل فريق في المباراة، وتتجدد كل مباراة). هذه الأرقام إجمالي كل الدوري:</p>
+      <div class="item-row"><div>🟨 إجمالي الإنذارات</div><b>${team.yellowCards}</b></div>
+      <div class="item-row"><div>🟥 إجمالي الكروت الحمراء</div><b>${team.redCards}</b></div>`;
     container.appendChild(card);
   }
 }
@@ -1485,6 +1450,25 @@ function renderResults(container) {
         .join("")}`;
       container.appendChild(rest);
     }
+
+    // إنهاء الدوري لا يظهر إلا هنا (عند إظهار الإجمالي الكامل) - ليس في نتائج الدورة الافتراضية ولا في شاشة نهاية المباراة
+    const danger = document.createElement("div");
+    danger.className = "card danger-zone";
+    danger.innerHTML = `<h3>🧹 إنهاء الدوري</h3>
+      <p class="small-note">يحذف كل بيانات الدوري الحالي (الفرق، الأكاديميات، المباريات، الأرصدة) ويعيدك لتسجيل فرق جديدة.</p>
+      <button class="btn btn-danger" id="btnEndLeague">إنهاء الدوري ومسح بياناته</button>`;
+    container.appendChild(danger);
+    danger.querySelector("#btnEndLeague").onclick = () =>
+      confirmModal({
+        icon: "⚠️",
+        title: "إنهاء الدوري",
+        message: "هل أنت متأكد؟ سيتم حذف بيانات الدوري الحالية ولا يمكن التراجع عن العملية.",
+        cancelLabel: "إلغاء",
+        confirmLabel: "تأكيد إنهاء الدوري",
+        danger: true,
+        onConfirm: resetLeague,
+      });
+
     fireConfetti(window.innerWidth / 2, 220, 40);
   } else {
     const cycleNum = currentCycleNumber();
@@ -1522,23 +1506,6 @@ function renderResults(container) {
     }
   }
 
-  const danger = document.createElement("div");
-  danger.className = "card danger-zone";
-  danger.innerHTML = `<h3>🧹 إنهاء الدوري</h3>
-    <p class="small-note">يحذف كل بيانات الدوري الحالي (الفرق، الأكاديميات، المباريات، الأرصدة) ويعيدك لتسجيل فرق جديدة.</p>
-    <button class="btn btn-danger" id="btnEndLeague">إنهاء الدوري ومسح بياناته</button>`;
-  container.appendChild(danger);
-  danger.querySelector("#btnEndLeague").onclick = () =>
-    confirmModal({
-      icon: "⚠️",
-      title: "إنهاء الدوري",
-      message: "هل أنت متأكد؟ سيتم حذف بيانات الدوري الحالية ولا يمكن التراجع عن العملية.",
-      cancelLabel: "إلغاء",
-      confirmLabel: "تأكيد إنهاء الدوري",
-      danger: true,
-      onConfirm: resetLeague,
-    });
-
   fireConfetti(window.innerWidth / 2, 220, 40);
 }
 
@@ -1546,6 +1513,7 @@ function renderResults(container) {
 function resetLeague() {
   const finishedStage = stageConfig(activeStageId);
   pendingMatch = null;
+  clearPendingMatch();
   activeTeamId = null;
   academySubView = null;
   cardsSubView = null;
@@ -1730,6 +1698,7 @@ function renderMatchLive(container) {
       danger: true,
       onConfirm: () => {
         pendingMatch = null;
+        clearPendingMatch();
         setView("team");
       },
     });
@@ -1753,7 +1722,62 @@ function buildLiveCardPicker(team, side) {
     wrap.appendChild(tile);
   });
   box.appendChild(wrap);
+
+  // البطاقات التأديبية (إنذار/كرت أحمر) - مرة واحدة لكل نوع لكل فريق في المباراة، منفصلة عن حد الـ3 بطاقات أعلاه، وتتجدد كل مباراة
+  const dWrap = document.createElement("div");
+  dWrap.className = "card-tiles-wrap";
+  [
+    { type: "yellow", icon: "🟨", name: "إنذار شفوي" },
+    { type: "red", icon: "🟥", name: "كرت أحمر" },
+  ].forEach((d) => {
+    const used = team.disciplineUsage[d.type] === pendingMatch.id;
+    const tile = document.createElement("button");
+    tile.className = "card-tile" + (used ? " used" : "");
+    tile.innerHTML = `<span class="card-tile-icon">${d.icon}</span><span class="card-tile-name">${d.name}</span>
+      <span class="card-tile-state">${used ? "✅ سُجِّلت" : "جاهزة"}</span>`;
+    tile.onclick = () => useDisciplineCard(team, d.type);
+    dWrap.appendChild(tile);
+  });
+  box.appendChild(dWrap);
   return box;
+}
+
+function useDisciplineCard(team, type) {
+  if (team.disciplineUsage[type] === pendingMatch.id) {
+    return notice("مُسجَّلة بالفعل", `سُجِّلت هذه البطاقة لفريق ${team.name} في هذه المباراة بالفعل.`, type === "yellow" ? "🟨" : "🟥");
+  }
+  if (type === "yellow") {
+    return confirmModal({
+      icon: "🟨",
+      title: `تسجيل إنذار شفوي لفريق ${team.name}؟`,
+      message: "إنذار فقط، بلا أي أثر على الرصيد أو النقاط.",
+      confirmLabel: "تسجيل الإنذار",
+      onConfirm: () => {
+        team.yellowCards++;
+        team.disciplineUsage.yellow = pendingMatch.id;
+        team.cardLog.push({ at: nowISO(), text: "🟨 إنذار شفوي" });
+        persist();
+        render();
+      },
+    });
+  }
+  confirmModal({
+    icon: "🟥",
+    title: `كرت أحمر لفريق ${team.name}؟`,
+    message: `سيحصل كل فرق ${esc(stageConfig(activeStageId).label)} الأخرى على ${CONFIG.redCardBonusForOthers} نقطة في الرصيد، ولن يحصل فريق ${team.name} (المستحِق للكرت) على أي نقاط إطلاقًا.`,
+    confirmLabel: "تسجيل الكرت الأحمر",
+    danger: true,
+    onConfirm: () => {
+      team.redCards++;
+      team.disciplineUsage.red = pendingMatch.id;
+      stage().teams.forEach((t) => {
+        if (t.id !== team.id) t.balance += CONFIG.redCardBonusForOthers;
+      });
+      team.cardLog.push({ at: nowISO(), text: `🟥 كرت أحمر — حصلت كل الفرق الأخرى على +${CONFIG.redCardBonusForOthers} رصيد، وبلا أي نقاط لهذا الفريق` });
+      persist();
+      render();
+    },
+  });
 }
 
 function useLiveCard(team, side, card) {
@@ -1770,6 +1794,7 @@ function useLiveCard(team, side, card) {
       "🃏"
     );
   }
+  if (card.effect === "steal") return useJokerCard(team, side, card, opp, oppSide);
   if (card.effect === "stopRival" && pendingMatch.shield[oppSide]) {
     return notice("🛡️ الخصم محمي بالدرع", `لا يمكن استخدام «${card.name}» ضد فريق ${opp.name} لأنه فعّل الدرع في هذه المباراة. البطاقة لم تُستهلك.`, "🛡️");
   }
@@ -1790,6 +1815,44 @@ function useLiveCard(team, side, card) {
       if (card.effect === "stopRival") pendingMatch.stopRival = side;
       team.cardUsage[card.id] = pendingMatch.id;
       team.cardLog.push({ at: nowISO(), text: `${card.icon} ${card.name} — في مباراة ضد ${opp.name}` });
+      persist();
+      render();
+    },
+  });
+}
+
+// الجوكر: يأخذ إحدى بطاقات الخصم غير المستخدمة بعد (عدا الدرع والجوكر نفسه) ويستخدمها فوراً لصالح هذا الفريق -
+// الخصم يفقدها فعلياً (لا يمكنه استخدامها بعد ذلك)، ويحميه الدرع من هذا مثل أي بطاقة أخرى تُستخدم ضده
+function useJokerCard(team, side, card, opp, oppSide) {
+  if (pendingMatch.shield[oppSide]) {
+    return notice("🛡️ الخصم محمي بالدرع", `لا يمكن استخدام «${card.name}» ضد فريق ${opp.name} لأنه فعّل الدرع في هذه المباراة. البطاقة لم تُستهلك.`, "🛡️");
+  }
+  const stealable = CONFIG.effectCards.filter((c) => c.id !== "shield" && c.id !== "joker" && opp.cardUsage[c.id] !== pendingMatch.id);
+  if (!stealable.length) {
+    return notice("لا توجد بطاقة لسرقتها", `فريق ${opp.name} ليس لديه أي بطاقة متاحة يأخذها الجوكر الآن.`, "🃏");
+  }
+  chooseModal({
+    icon: "🃏",
+    title: `الجوكر: اختر بطاقة فريق ${opp.name} لتأخذها لصالح ${team.name}`,
+    options: stealable.map((c) => ({ label: `${c.icon} ${c.name}`, value: c.id })),
+    onChoose: (stolenId) => {
+      const stolen = effectCardById(stolenId);
+      if (opp.cardUsage[stolenId] === pendingMatch.id) {
+        return notice("لم تعد متاحة", `استُخدمت بطاقة «${stolen.name}» بالفعل قبل إتمام السرقة.`, stolen.icon);
+      }
+      if (stolen.effect === "stopRival" && pendingMatch.stopRival) {
+        return notice("يوجد سؤال محجوز الآن", "أنهِ السؤال المحجوز الحالي أولاً ثم استخدم البطاقة.", "✋");
+      }
+      if (stolen.effect === "arm" && pendingMatch.armed[side]) {
+        return notice("مضاعفة مفعّلة بالفعل", `لدى فريق ${team.name} مضاعفة مفعّلة للإجابة القادمة.`, stolen.icon);
+      }
+      if (stolen.effect === "arm") pendingMatch.armed[side] = stolen.id;
+      if (stolen.effect === "stopRival") pendingMatch.stopRival = side;
+      team.cardUsage[card.id] = pendingMatch.id;
+      team.cardUsage[stolenId] = pendingMatch.id;
+      opp.cardUsage[stolenId] = pendingMatch.id;
+      team.cardLog.push({ at: nowISO(), text: `🃏 الجوكر — أخذ بطاقة «${stolen.name}» من فريق ${opp.name} واستخدمها` });
+      opp.cardLog.push({ at: nowISO(), text: `🃏 فقد فريق ${opp.name} بطاقة «${stolen.name}» بسبب جوكر ${team.name}` });
       persist();
       render();
     },
@@ -1857,6 +1920,7 @@ function finalizeMatch(teamA, teamB) {
   });
 
   pendingMatch = null;
+  clearPendingMatch();
   persist();
   showWinnerModal({
     teamA,
@@ -1914,15 +1978,61 @@ function fireConfetti(x, y, count) {
   }
 }
 
-render();
+// يسترجع مباراة كانت جارية ولم تُنهَ (بنتيجتها وبطاقاتها كما كانت) لو انكسر الجهاز أو أُعيد تحميل الصفحة بالخطأ أثناءها
+function tryResumePendingMatch() {
+  const saved = loadPendingMatch();
+  if (!saved || !saved.pendingMatch || !saved.stageId || !state.stages[saved.stageId]) return false;
+  const savedStage = state.stages[saved.stageId];
+  const f = saved.pendingMatch.fixture;
+  const realFixture = savedStage.schedule.find(
+    (x) => !x.played && x.leg === f.leg && x.teamAId === f.teamAId && x.teamBId === f.teamBId
+  );
+  if (!realFixture) return false; // الفريقان أو المباراة لم يعودا كما كانا - يُتجاهل الاسترجاع بأمان
+  activeStageId = saved.stageId;
+  activeTeamId = f.teamAId;
+  pendingMatch = { ...saved.pendingMatch, fixture: realFixture };
+  currentView = "match-live";
+  return true;
+}
 
-// استعادة تلقائية من النسخة الاحتياطية السحابية فقط إذا كان هذا الجهاز فارغاً تماماً (لا يوجد حفظ محلي أصلاً)
+const resumedMatch = tryResumePendingMatch();
+render();
+if (resumedMatch) {
+  notice("تم استرجاع المباراة", "كانت هناك مباراة جارية لم تُنهَ، وتمت استعادتها بنتيجتها وبطاقاتها كما كانت.", "🔄");
+}
+
+function isValidCloudBackup(cloud) {
+  return !!cloud && typeof cloud === "object" && (cloud.stages || Array.isArray(cloud.teams));
+}
+
 if (!localStorage.getItem(STORAGE_KEY)) {
+  // جهاز فارغ تمامًا (لا يوجد حفظ محلي أصلاً) - استعادة تلقائية وصامتة، آمنة لأنه لا يوجد شيء محلي ليُفقد هنا
   tryCloudRestore().then((cloud) => {
-    if (cloud && typeof cloud === "object" && (cloud.stages || Array.isArray(cloud.teams))) {
+    if (isValidCloudBackup(cloud)) {
       state = migrateState(cloud);
       saveState(state);
       render();
     }
+  });
+} else {
+  // جهاز لديه بيانات محلية بالفعل - لا تُستبدل تلقائياً أبداً، فقط إن وُجدت نسخة سحابية أحدث فعلاً (حُدّثت من جهاز آخر لاحقًا)
+  // يُسأل المدير أولاً؛ هذا يمنع ظهور بيانات قديمة/محذوفة بصمت عند فتح البرنامج من جهاز أو متصفح آخر
+  tryCloudRestore().then((cloud) => {
+    if (!isValidCloudBackup(cloud)) return;
+    const cloudTime = cloud.updatedAt || 0;
+    const localTime = state.updatedAt || 0;
+    if (cloudTime <= localTime) return;
+    confirmModal({
+      icon: "☁️",
+      title: "توجد نسخة أحدث محفوظة سحابيًا",
+      message: `يبدو أن البيانات على هذا الجهاز ليست الأحدث - توجد نسخة حُدّثت لاحقًا من جهاز آخر (${new Date(cloudTime).toLocaleString("ar")}). هل تريد استخدامها بدلاً من بيانات هذا الجهاز؟`,
+      confirmLabel: "استخدام النسخة الأحدث",
+      cancelLabel: "إبقاء بيانات هذا الجهاز",
+      onConfirm: () => {
+        state = migrateState(cloud);
+        saveState(state);
+        render();
+      },
+    });
   });
 }

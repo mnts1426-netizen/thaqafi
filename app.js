@@ -431,7 +431,7 @@ function renderIntro() {
 
   div.innerHTML += `
     <button class="intro-explain-btn" id="btnExplain">📖 شرح المسابقة</button>
-    <div class="intro-logo"><img src="assets/logo.png" alt="شعار الدوري الثقافي" /></div>
+    <div class="intro-logo"><img src="assets/logo.png?v=2" alt="شعار الدوري الثقافي" /></div>
     <div class="intro-title">${esc(T.introTitle)}</div>
     <div class="slogans">
       ${T.introSlogans.map((s, i) => `<div class="slogan ${i === 0 ? "right" : ""}">${esc(s)}</div>`).join("")}
@@ -487,7 +487,7 @@ function renderSetup() {
   div.style.justifyContent = "flex-start";
   div.style.paddingTop = "60px";
   div.innerHTML = `
-    <div class="intro-logo small"><img src="assets/logo.png" alt="" /></div>
+    <div class="intro-logo small"><img src="assets/logo.png?v=2" alt="" /></div>
     <div class="intro-title">تسجيل فرق ${esc(sc.label)}</div>
     <p style="opacity:0.85; margin-top:-10px;">${esc(sc.sub)}</p>
     <div class="card" style="color:#10222a; max-width:480px; width:100%;">
@@ -541,7 +541,7 @@ function renderStageSelect() {
   const div = document.createElement("div");
   div.className = "intro-screen";
   div.innerHTML = `
-    <div class="intro-logo small"><img src="assets/logo.png" alt="" /></div>
+    <div class="intro-logo small"><img src="assets/logo.png?v=2" alt="" /></div>
     <div class="intro-title">اختر المرحلة</div>
     <p class="subtext" style="margin-bottom:10px;">لكل مرحلة دوريها وفرقها ونتائجها الخاصة، منفصلة تمامًا عن المرحلة الأخرى.</p>
   `;
@@ -573,7 +573,7 @@ function renderTopbar() {
   bar.className = "topbar";
   bar.innerHTML = `
     <button class="brand" id="btnBrandHome" title="الرئيسية">
-      <img src="assets/logo.png" alt="" class="brand-logo" />
+      <img src="assets/logo.png?v=2" alt="" class="brand-logo" />
       <span>الدوري الثقافي</span>
     </button>
     <div class="topbar-actions">
@@ -1000,7 +1000,49 @@ function renderSupport(container) {
   });
   container.appendChild(grid);
 
+  container.appendChild(buildManualAdjustCard(team));
   container.appendChild(logCard(`سجل دعم ${team.name}`, team.supportLog));
+}
+
+// تعديل يدوي من المدير خارج المباراة (إضافة أو خصم) لنقاط الدوري أو الأهداف أو الرصيد - كل تعديل يُسجَّل في سجل الفريق
+const MANUAL_FIELDS = [
+  { icon: "⚽", label: "نقاط الدوري", get: (t) => t.matches.points, set: (t, v) => (t.matches.points = v) },
+  { icon: "🎯", label: "الأهداف", get: (t) => t.matches.goalsFor, set: (t, v) => (t.matches.goalsFor = v) },
+  { icon: "💰", label: "الرصيد", get: (t) => t.balance, set: (t, v) => (t.balance = v) },
+];
+
+function buildManualAdjustCard(team) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `<h3>✍️ تعديل يدوي</h3>
+    <p class="small-note">أضف أو اخصم يدويًا (اكتب رقمًا سالبًا للخصم، مثل -3). يُسجَّل كل تعديل في سجل الفريق.</p>`;
+  MANUAL_FIELDS.forEach((f) => {
+    const row = document.createElement("div");
+    row.className = "item-row";
+    row.innerHTML = `<div>${f.icon} ${f.label}: <b>${f.get(team)}</b></div><button class="btn btn-gold">تعديل</button>`;
+    row.querySelector("button").onclick = () => manualAdjust(team, f);
+    card.appendChild(row);
+  });
+  return card;
+}
+
+function manualAdjust(team, f) {
+  promptModal({
+    icon: f.icon,
+    title: `تعديل ${f.label} لفريق ${team.name}`,
+    message: `القيمة الحالية: ${f.get(team)}. اكتب الرقم المراد إضافته، أو رقمًا سالبًا للخصم.`,
+    onSubmit: (value) => {
+      const normalized = value.replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[−–]/g, "-");
+      const n = Number(normalized);
+      if (!Number.isInteger(n) || n === 0) return notice("رقم غير صحيح", "اكتب عددًا صحيحًا غير الصفر، مثل 3 أو -2.", "⚠️");
+      const next = f.get(team) + n;
+      if (next < 0) return notice("لا يمكن", `لا يمكن أن تصبح ${f.label} أقل من صفر (القيمة الحالية ${f.get(team)}).`, "⚠️");
+      f.set(team, next);
+      team.supportLog.push({ at: nowISO(), text: `✍️ تعديل يدوي: ${n > 0 ? "+" : ""}${n} ${f.label} (أصبحت ${next})` });
+      persist();
+      render();
+    },
+  });
 }
 
 function grantPoints(team, amount) {

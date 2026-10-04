@@ -9,6 +9,9 @@ let showFullResults = false; // إظهار الإجمالي الكامل (كل �
 const openModals = [];
 
 const root = document.getElementById("app");
+// الشعار مضمَّن من logo-data.js (لا يعتمد على مجلد assets)؛ ولو غاب ذلك الملف في نسخة ما يُستخدم ملف الصورة بدل أن يتعطل البرنامج
+const LOGO = typeof LOGO_SRC !== "undefined" ? LOGO_SRC : "assets/logo.png?v=3";
+document.querySelector('link[rel="icon"]')?.setAttribute("href", LOGO);
 const T = CONFIG.texts;
 
 // حالة المرحلة المختارة حالياً (الفتيان أو الأشبال) - كل الفرق والمباريات والنتائج معزولة تماماً بين المرحلتين
@@ -431,7 +434,7 @@ function renderIntro() {
 
   div.innerHTML += `
     <button class="intro-explain-btn" id="btnExplain">📖 شرح المسابقة</button>
-    <div class="intro-logo"><img src="assets/logo.png?v=2" alt="شعار الدوري الثقافي" /></div>
+    <div class="intro-logo"><img src="${LOGO}" alt="شعار الدوري الثقافي" /></div>
     <div class="intro-title">${esc(T.introTitle)}</div>
     <div class="slogans">
       ${T.introSlogans.map((s, i) => `<div class="slogan ${i === 0 ? "right" : ""}">${esc(s)}</div>`).join("")}
@@ -487,7 +490,7 @@ function renderSetup() {
   div.style.justifyContent = "flex-start";
   div.style.paddingTop = "60px";
   div.innerHTML = `
-    <div class="intro-logo small"><img src="assets/logo.png?v=2" alt="" /></div>
+    <div class="intro-logo small"><img src="${LOGO}" alt="" /></div>
     <div class="intro-title">تسجيل فرق ${esc(sc.label)}</div>
     <p style="opacity:0.85; margin-top:-10px;">${esc(sc.sub)}</p>
     <div class="card" style="color:#10222a; max-width:480px; width:100%;">
@@ -541,7 +544,7 @@ function renderStageSelect() {
   const div = document.createElement("div");
   div.className = "intro-screen";
   div.innerHTML = `
-    <div class="intro-logo small"><img src="assets/logo.png?v=2" alt="" /></div>
+    <div class="intro-logo small"><img src="${LOGO}" alt="" /></div>
     <div class="intro-title">اختر المرحلة</div>
     <p class="subtext" style="margin-bottom:10px;">لكل مرحلة دوريها وفرقها ونتائجها الخاصة، منفصلة تمامًا عن المرحلة الأخرى.</p>
   `;
@@ -573,7 +576,7 @@ function renderTopbar() {
   bar.className = "topbar";
   bar.innerHTML = `
     <button class="brand" id="btnBrandHome" title="الرئيسية">
-      <img src="assets/logo.png?v=2" alt="" class="brand-logo" />
+      <img src="${LOGO}" alt="" class="brand-logo" />
       <span>الدوري الثقافي</span>
     </button>
     <div class="topbar-actions">

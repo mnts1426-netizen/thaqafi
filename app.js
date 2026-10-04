@@ -55,24 +55,15 @@ function allShopItemsFlat() {
   return out;
 }
 
-// مبنى يحتاج موظفاً مرتبطاً به (requiresEmployee) لا يُحسب أي مكافأة منه إلا إذا كان الفريق قد وظّف ذلك الموظف أيضاً
-function isBuildingActive(team, building) {
-  return !building.requiresEmployee || (team.employees[building.requiresEmployee] || 0) > 0;
-}
-
-function activeBuildingsTotal(team) {
-  return CONFIG.buildings.reduce((sum, b) => {
-    const count = team.buildings[b.id] || 0;
-    return sum + (count > 0 && isBuildingActive(team, b) ? count * b.cost : 0);
-  }, 0);
-}
-
 function academyStats(team) {
   const buildingCount = countItems(team.buildings, CONFIG.buildings);
   const employeeCount = countItems(team.employees, CONFIG.employees);
   const playerBatches = countItems(team.players, CONFIG.players);
   const playerCount = playerBatches * (CONFIG.players[0]?.batchSize || 5);
-  const academyTotal = activeBuildingsTotal(team) + pointsFromCounts(team.employees, CONFIG.employees) + pointsFromCounts(team.players, CONFIG.players);
+  const academyTotal =
+    pointsFromCounts(team.buildings, CONFIG.buildings) +
+    pointsFromCounts(team.employees, CONFIG.employees) +
+    pointsFromCounts(team.players, CONFIG.players);
   return { buildingCount, employeeCount, playerBatches, playerCount, academyTotal };
 }
 
@@ -90,50 +81,18 @@ function rankedTeams() {
   });
 }
 
-// الدورة = ذهاب + إياب (كل فريق يلعب ضد كل فريق مرتين، تقريبًا 4 مباريات للفريق مع 3 فرق)
-function currentCycleNumber() {
-  const leg = currentLeg(stage());
-  if (leg !== null) return Math.ceil(leg / 2);
-  const legs = stage().matchLog.map((m) => m.leg).filter((l) => l !== undefined);
-  return legs.length ? Math.ceil(Math.max(...legs) / 2) : 1;
+// كل مباراة = جولة واحدة تضم كل فرق المرحلة معًا. سجل الجولات الجديد يحمل results؛ أي سجل قديم بين فريقين يُتجاهل هنا
+function roundEntries() {
+  return stage().matchLog.filter((m) => Array.isArray(m.results));
 }
 
-// نقاط الدوري فقط (بلا أكاديمية) لمباريات دورة واحدة محددة، مُعادة الحساب من سجل المباريات مباشرة
-function cycleMatchStats(cycleNum) {
-  const stats = {};
-  stage().teams.forEach((t) => (stats[t.id] = { played: 0, won: 0, drawn: 0, lost: 0, points: 0 }));
-  stage().matchLog.forEach((m) => {
-    if (m.leg === undefined || Math.ceil(m.leg / 2) !== cycleNum) return;
-    const a = stats[m.teamAId];
-    const b = stats[m.teamBId];
-    if (!a || !b) return;
-    a.played++;
-    b.played++;
-    if (m.scoreA > m.scoreB) {
-      a.won++;
-      a.points += CONFIG.matchPoints.win;
-      b.lost++;
-      b.points += m.scoreB > 0 ? CONFIG.matchPoints.lossIfScored : CONFIG.matchPoints.lossIfZero;
-    } else if (m.scoreB > m.scoreA) {
-      b.won++;
-      b.points += CONFIG.matchPoints.win;
-      a.lost++;
-      a.points += m.scoreA > 0 ? CONFIG.matchPoints.lossIfScored : CONFIG.matchPoints.lossIfZero;
-    } else {
-      a.drawn++;
-      b.drawn++;
-      a.points += CONFIG.matchPoints.drawEach;
-      b.points += CONFIG.matchPoints.drawEach;
-    }
-  });
-  return stats;
+function nextRoundNumber() {
+  return roundEntries().length + 1;
 }
 
-function rankedByCycle(cycleNum) {
-  const stats = cycleMatchStats(cycleNum);
-  return stage()
-    .teams.slice()
-    .sort((a, b) => stats[b.id].points - stats[a.id].points);
+function lastRoundEntry() {
+  const list = roundEntries();
+  return list.length ? list[list.length - 1] : null;
 }
 
 // مكافأة الرصيد حسب الملكية: تُجمع لكل وحدة مملوكة على حدة حسب فئة تكلفتها الأساسية الثابتة
@@ -143,7 +102,6 @@ function ownershipBalanceBonus(team, result) {
   allShopItemsFlat().forEach(({ key, item }) => {
     const count = team[key][item.id] || 0;
     if (count <= 0) return;
-    if (key === "buildings" && !isBuildingActive(team, item)) return;
     const tier = CONFIG.ownershipBonusTiers[item.cost];
     if (tier) total += count * tier[result];
   });
@@ -187,11 +145,8 @@ function timeLabel(iso) {
   }
 }
 
-function legLabel(leg) {
-  if (!leg) return "";
-  const cycle = Math.ceil(leg / 2);
-  const part = leg % 2 === 1 ? "الذهاب" : "الإياب";
-  return cycle > 1 ? `الدورة ${cycle} — ${part}` : `دور ${part}`;
+function roundLabel(n) {
+  return `الجولة ${n}`;
 }
 
 const TEAM_COLORS = ["#12a89b", "#f2a93b", "#e5484d", "#6c5ce7", "#0984e3", "#00b894", "#e17055", "#d63384"];
@@ -208,8 +163,13 @@ function avatarHtml(team, size) {
 
 const RESULT_LABELS = { win: "فوز", draw: "تعادل", loss: "خسارة" };
 
-function resultChip(result) {
-  return `<span class="result-chip ${result}">${RESULT_LABELS[result]}</span>`;
+function resultChip(result, label) {
+  return `<span class="result-chip ${result}">${label || RESULT_LABELS[result]}</span>`;
+}
+
+// تسمية مركز الفريق في مباراة الفرق كلها (مع الإشارة لأي تعادل)
+function tierLabel(r) {
+  return r.tied ? `تعادل — المركز ${r.place}` : `المركز ${r.place}`;
 }
 
 function effectCardById(id) {
@@ -570,7 +530,6 @@ function renderSetup() {
     const stamp = Date.now();
     state.stages[activeStageId] = emptyStage();
     stage().teams = names.map((name, i) => newTeam("team_" + stamp + "_" + i, name, i));
-    stage().schedule = generateCycle(stage().teams, 1, 0);
     stage().setupDone = true;
     persist();
     setView("hub");
@@ -682,13 +641,6 @@ function renderHub(container) {
     container.querySelector("#goSetup").onclick = () => setView("setup");
     return;
   }
-  if (ensureSchedule(stage())) persist();
-
-  const leg = currentLeg(stage());
-  const legFixtures = stage().schedule.filter((f) => f.leg === leg);
-  const playedInLeg = legFixtures.filter((f) => f.played).length;
-  const pct = legFixtures.length ? Math.round((playedInLeg / legFixtures.length) * 100) : 0;
-
   const head = document.createElement("div");
   head.className = "hub-head";
   head.innerHTML = `
@@ -697,23 +649,16 @@ function renderHub(container) {
       <p>اضغط على الفريق للدخول إلى صفحته</p>
     </div>
     <div class="leg-progress">
-      <div class="leg-progress-label">⚽ ${esc(legLabel(leg))} — ${playedInLeg} / ${legFixtures.length} مباريات</div>
-      <div class="leg-progress-bar"><span style="width:${pct}%"></span></div>
+      <div class="leg-progress-label">⚽ ${esc(roundLabel(nextRoundNumber()))} القادمة — كل الفرق معًا</div>
     </div>`;
   container.appendChild(head);
+  container.appendChild(buildNextMatchCard());
 
   const ranks = rankedTeams().map((t) => t.id);
   const grid = document.createElement("div");
   grid.className = "grid team-card-grid";
   stage().teams.forEach((t) => {
     const s = academyStats(t);
-    const next = nextFixtureForTeam(stage(), t.id);
-    let nextHtml = `<span class="team-card-next done">✅ أنهى مباريات هذا الدور</span>`;
-    if (next) {
-      const opp = getTeam(next.teamAId === t.id ? next.teamBId : next.teamAId);
-      const home = next.teamAId === t.id;
-      nextHtml = `<span class="team-card-next">🎯 القادم: ضد ${esc(opp.name)} ${home ? "🏠 على ملعبه" : "✈️ على ملعب الخصم"}</span>`;
-    }
     const card = document.createElement("button");
     card.className = "team-card" + (t.hasLand ? "" : " no-land");
     card.style.setProperty("--team-color", teamColor(t));
@@ -727,7 +672,6 @@ function renderHub(container) {
         <span title="نقاط الدوري">⚽ ${t.matches.points}</span>
       </div>
       <span class="land-badge ${t.hasLand ? "ok" : "missing"}">${t.hasLand ? "🏞️ لديه أرض الأكاديمية" : "🔒 بدون أرض أكاديمية"}</span>
-      ${nextHtml}
     `;
     card.onclick = () => {
       activeTeamId = t.id;
@@ -736,32 +680,19 @@ function renderHub(container) {
     grid.appendChild(card);
   });
   container.appendChild(grid);
-
-  container.appendChild(buildLegScheduleCard(legFixtures, leg));
 }
 
-// جدول مباريات الجولة الحالية فقط (لا يظهر أي جولة أخرى) - يُستبدل تلقائياً بمباريات الجولة التالية عند انتهاء هذه
-function buildLegScheduleCard(legFixtures, leg) {
+// بطاقة بدء المباراة القادمة: كل فرق المرحلة تلعب معًا في مباراة واحدة (تُحسب جولة)
+function buildNextMatchCard() {
   const card = document.createElement("div");
-  card.className = "card";
-  card.innerHTML = `<h3>📋 جدول ${esc(legLabel(leg))}</h3>`;
-  const grid = document.createElement("div");
-  grid.className = "grid fixture-grid";
-  legFixtures.forEach((f) => {
-    const home = getTeam(f.teamAId);
-    const away = getTeam(f.teamBId);
-    const fx = document.createElement("div");
-    fx.className = "fixture-card" + (f.played ? " played" : "");
-    fx.innerHTML = `
-      <div class="fixture-teams">
-        <span class="fixture-team">🏠 ${esc(home.name)}</span>
-        <span class="fixture-score">${f.played ? `${f.scoreA} : ${f.scoreB}` : "VS"}</span>
-        <span class="fixture-team">✈️ ${esc(away.name)}</span>
-      </div>
-      <span class="tag ${f.played ? "" : "warn"}">${f.played ? "✅ انتهت" : "⏳ لم تُلعب بعد"}</span>`;
-    grid.appendChild(fx);
-  });
-  card.appendChild(grid);
+  card.className = "next-match-card";
+  card.innerHTML = `
+    <div class="next-match-title">⚽ ${esc(roundLabel(nextRoundNumber()))} — مباراة كاملة لكل الفرق، وتنتهي الجولة بانتهاء المباراة</div>
+    <div class="next-match-vs">${stage()
+      .teams.map((t) => `<span class="nm-team">${avatarHtml(t, 40)} ${esc(t.name)}</span>`)
+      .join('<span class="nm-vs">VS</span>')}</div>
+    <button class="btn-start" id="btnStartMatch">⚽ ابدأ المباراة</button>`;
+  card.querySelector("#btnStartMatch").onclick = () => startMatch();
   return card;
 }
 
@@ -769,7 +700,6 @@ function buildLegScheduleCard(legFixtures, leg) {
 function renderTeamPage(container) {
   const team = activeTeam();
   if (!team) return setView("hub");
-  if (ensureSchedule(stage())) persist();
   addBackButton(container);
 
   const s = academyStats(team);
@@ -817,34 +747,7 @@ function renderTeamPage(container) {
     lock.querySelector("#goGrantLand").onclick = () => setView("support");
   }
 
-  // المباراة القادمة لهذا الفريق فقط
-  const next = nextFixtureForTeam(stage(), team.id);
-  const matchCard = document.createElement("div");
-  matchCard.className = "next-match-card";
-  if (next) {
-    const home = getTeam(next.teamAId);
-    const away = getTeam(next.teamBId);
-    matchCard.innerHTML = `
-      <div class="next-match-title">⚽ المباراة القادمة — ${esc(legLabel(next.leg))}</div>
-      <div class="next-match-vs">
-        <span class="nm-team">${avatarHtml(home, 40)} ${esc(home.name)} <small>🏠 صاحب الأرض</small></span>
-        <span class="nm-vs">VS</span>
-        <span class="nm-team">${avatarHtml(away, 40)} ${esc(away.name)} <small>✈️ الضيف</small></span>
-      </div>
-      <div class="next-match-stadium">🏟️ على ملعب ${esc(home.name)}</div>
-      <button class="btn-start" id="btnStartMatch">⚽ ابدأ المباراة</button>`;
-    container.appendChild(matchCard);
-    matchCard.querySelector("#btnStartMatch").onclick = () => startMatchForTeam(team);
-  } else {
-    const leg = currentLeg(stage());
-    const waiting = stage().teams
-      .filter((t) => stage().schedule.some((f) => !f.played && f.leg === leg && (f.teamAId === t.id || f.teamBId === t.id)))
-      .map((t) => t.name);
-    matchCard.innerHTML = `
-      <div class="next-match-title">✅ أنهى ${esc(team.name)} مبارياته في ${esc(legLabel(leg))}</div>
-      <p class="next-match-wait">الفرق التي لديها مباريات متبقية في هذا الدور: <b>${esc(waiting.join("، ") || "—")}</b></p>`;
-    container.appendChild(matchCard);
-  }
+  container.appendChild(buildNextMatchCard());
 
   const tiles = [
     { id: "academy", icon: "🏗️", label: "إنشاء الأكاديمية", needsLand: false },
@@ -868,6 +771,37 @@ function renderTeamPage(container) {
     grid.appendChild(btn);
   });
   container.appendChild(grid);
+  container.appendChild(buildTeamActivityCard(team));
+}
+
+// سجل الفريق الموحّد: كل ما عمله الفريق وما حصل عليه (مباريات، مشتريات، دعم، بطاقات)، الأحدث أولاً
+function buildTeamActivityCard(team) {
+  const items = [
+    ...team.purchaseLog.map((l) => ({ at: l.at, html: esc(l.text) })),
+    ...team.supportLog.map((l) => ({ at: l.at, html: esc(l.text) })),
+    ...team.cardLog.map((l) => ({ at: l.at, html: esc(l.text) })),
+    ...stage()
+      .matchLog.filter((m) => Array.isArray(m.results) && m.results.some((r) => r.teamId === team.id))
+      .map((m) => {
+        const r = m.results.find((x) => x.teamId === team.id);
+        return {
+          at: m.at,
+          html: `⚽ ${esc(roundLabel(m.round))}: ${esc(tierLabel(r))} — ${r.score} هدف، <b>+${r.leaguePoints}</b> نقطة دوري${
+            r.rescued ? " (منها نقطة الإنقاذ 🚑)" : ""
+          }، <b>+${r.bonus}</b> رصيد`,
+        };
+      }),
+  ].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `<h3>📜 سجل الفريق</h3>${
+    items.length
+      ? `<ul class="log-list">${items
+          .map((i) => `<li>${i.html}${i.at ? ` <small>${esc(timeLabel(i.at))}</small>` : ""}</li>`)
+          .join("")}</ul>`
+      : '<p class="small-note">لم يعمل الفريق أي شيء بعد.</p>'
+  }`;
+  return card;
 }
 
 /* ================= إنشاء الأكاديمية ================= */
@@ -961,13 +895,8 @@ function buildShopSection(title, list, team, key) {
     row.className = "item-row shop-row";
 
     let ownedText = "";
-    if (key === "buildings") {
-      ownedText = count > 0 ? "✅ الفريق يمتلكه بالفعل" : "لم يُبنَ بعد";
-      if (count > 0 && item.requiresEmployee && !isBuildingActive(team, item)) {
-        const empName = CONFIG.employees.find((e) => e.id === item.requiresEmployee)?.name || item.requiresEmployee;
-        ownedText += ` <span class="tag warn">⚠️ لا فائدة منه بدون ${esc(empName)}</span>`;
-      }
-    } else if (key === "players") ownedText = `لدى الفريق: ${count * (item.batchSize || 5)} لاعب`;
+    if (key === "buildings") ownedText = count > 0 ? "✅ الفريق يمتلكه بالفعل" : "لم يُبنَ بعد";
+    else if (key === "players") ownedText = `لدى الفريق: ${count * (item.batchSize || 5)} لاعب`;
     else ownedText = `لدى الفريق: ${count}`;
 
     let state_ = "buy";
@@ -1005,6 +934,7 @@ function buildShopSection(title, list, team, key) {
           if (team.balance < cost) return;
           team.balance -= cost;
           team[key][item.id] = (team[key][item.id] || 0) + 1;
+          team.purchaseLog.push({ at: nowISO(), text: `🏗️ شراء «${item.name}» بـ ${cost} نقطة` });
           persist();
           render();
           fireConfetti(window.innerWidth / 2, 160, 24);
@@ -1148,7 +1078,7 @@ function renderCards(container) {
   const head = document.createElement("div");
   head.className = "card";
   head.innerHTML = `<h2 style="margin:0 0 6px;">🃏 بطاقات ${esc(team.name)}</h2>
-    <div class="small-note">بطاقات المباراة تُستخدم من داخل شاشة المباراة فقط، مرة واحدة لكل فريق في المباراة.</div>`;
+    <div class="small-note">بطاقات المباراة تعمل داخل المباراة المباشرة للسؤال الحالي فقط، وبلا حد لعدد مرات الاستخدام. ويمكن تسجيل استخدامها هنا خارج المباراة أيضًا.</div>`;
   container.appendChild(head);
 
   if (!cardsSubView) {
@@ -1177,12 +1107,27 @@ function renderCards(container) {
   if (cardsSubView === "effect") {
     const card = document.createElement("div");
     card.className = "card";
-    card.innerHTML = `<h3>⚡ بطاقات المباراة</h3><p class="small-note">تُستخدم من شاشة المباراة المباشرة قبل طرح السؤال، وتظهر هناك لكل فريق مع نافذة تأكيد.</p>
-      <div class="effect-info-grid">${CONFIG.effectCards
-        .map(
-          (c) => `<div class="effect-info"><span class="effect-info-icon">${c.icon}</span><b>${esc(c.name)}</b><span>${esc(c.desc)}</span></div>`
-        )
-        .join("")}</div>`;
+    card.innerHTML = `<h3>⚡ بطاقات المباراة</h3><p class="small-note">داخل المباراة تُرفع من شاشتها وتعمل في السؤال الحالي فقط. هنا (خارج المباراة) يُسجَّل الاستخدام في سجل الفريق فقط، بلا أي أثر على النقاط أو الرصيد، وبلا حد لعدد المرات.</p>
+      <div class="effect-info-grid"></div>`;
+    const infoGrid = card.querySelector(".effect-info-grid");
+    CONFIG.effectCards.forEach((c) => {
+      const tile = document.createElement("button");
+      tile.className = "effect-info";
+      tile.innerHTML = `<span class="effect-info-icon">${c.icon}</span><b>${esc(c.name)}</b><span>${esc(c.desc)}</span>`;
+      tile.onclick = () =>
+        confirmModal({
+          icon: c.icon,
+          title: `تسجيل استخدام «${c.name}» لفريق ${team.name}؟`,
+          message: "خارج المباراة يُسجَّل الاستخدام في سجل الفريق فقط.",
+          confirmLabel: "تسجيل الاستخدام",
+          onConfirm: () => {
+            team.cardLog.push({ at: nowISO(), text: `${c.icon} ${c.name} — استخدام خارج المباراة` });
+            persist();
+            render();
+          },
+        });
+      infoGrid.appendChild(tile);
+    });
     container.appendChild(card);
   }
 
@@ -1212,7 +1157,7 @@ function renderCards(container) {
     const card = document.createElement("div");
     card.className = "card";
     card.innerHTML = `<h3>🟨🟥 البطاقات التأديبية</h3>
-      <p class="small-note">تُسجَّل فقط من داخل المباراة المباشرة (مرة واحدة من كل نوع لكل فريق في المباراة، وتتجدد كل مباراة). هذه الأرقام إجمالي كل الدوري:</p>
+      <p class="small-note">تُسجَّل من داخل المباراة المباشرة، وبلا أي حد لعدد المرات. هذه الأرقام إجمالي كل الدوري:</p>
       <div class="item-row"><div>🟨 إجمالي الإنذارات</div><b>${team.yellowCards}</b></div>
       <div class="item-row"><div>🟥 إجمالي الكروت الحمراء</div><b>${team.redCards}</b></div>`;
     container.appendChild(card);
@@ -1318,9 +1263,9 @@ function renderTeamResults(container) {
     ["🟥", "البطاقات الحمراء", team.redCards],
     ["🟨", "البطاقات الصفراء", team.yellowCards],
     ["🎮", "عدد المباريات", m.played],
-    ["🟢", "مرات الفوز", m.won],
-    ["🟡", "مرات التعادل", m.drawn],
-    ["🔴", "مرات الخسارة", m.lost],
+    ["🟢", "مرات المركز الأول", m.won],
+    ["🟡", "مرات التعادل / الوسط", m.drawn],
+    ["🔴", "مرات المركز الأخير", m.lost],
   ];
 
   const head = document.createElement("div");
@@ -1343,7 +1288,11 @@ function renderTeamResults(container) {
   container.appendChild(owned);
 
   const history = stage().matchLog.filter((x) =>
-    x.teamAId ? x.teamAId === team.id || x.teamBId === team.id : x.teamAName === team.name || x.teamBName === team.name
+    Array.isArray(x.results)
+      ? x.results.some((r) => r.teamId === team.id)
+      : x.teamAId
+      ? x.teamAId === team.id || x.teamBId === team.id
+      : x.teamAName === team.name || x.teamBName === team.name
   );
   const hist = document.createElement("div");
   hist.className = "card";
@@ -1353,6 +1302,13 @@ function renderTeamResults(container) {
           .slice()
           .reverse()
           .map((x) => {
+            if (Array.isArray(x.results)) {
+              const mine = x.results.find((r) => r.teamId === team.id);
+              const scores = x.results.map((r) => `${esc(r.teamName)} <b>${r.score}</b>`).join(" • ");
+              return `<li>${resultChip(mine.tier, tierLabel(mine))} ${esc(roundLabel(x.round))}: ${scores} <small>(+${mine.leaguePoints} نقطة دوري، +${mine.bonus} رصيد)</small> ${
+                x.at ? `<small>${esc(timeLabel(x.at))}</small>` : ""
+              }</li>`;
+            }
             const isA = x.teamAId ? x.teamAId === team.id : x.teamAName === team.name;
             const mine = isA ? x.scoreA : x.scoreB;
             const theirs = isA ? x.scoreB : x.scoreA;
@@ -1386,21 +1342,23 @@ function renderResults(container) {
   const head = document.createElement("div");
   head.className = "results-head";
   head.innerHTML = showFullResults
-    ? `<h2>🏆 الإجمالي الكامل لكل الدورات</h2><p>الإجمالي = ⚽ كل نقاط الدوري + 🏗️ نقاط الأكاديمية</p>`
-    : `<h2>🏆 نتائج الدورة ${currentCycleNumber()}</h2><p>نقاط هذه الدورة فقط (ذهاب وإياب لكل الفرق) — بلا نقاط أكاديمية وبلا دورات سابقة</p>`;
+    ? `<h2>🏆 الإجمالي الكامل لكل الجولات</h2><p>الإجمالي = ⚽ كل نقاط الدوري + 🏗️ نقاط الأكاديمية</p>`
+    : lastRoundEntry()
+    ? `<h2>🏆 نتائج ${esc(roundLabel(lastRoundEntry().round))}</h2><p>نتائج آخر مباراة فقط — بلا نقاط أكاديمية وبلا جولات سابقة</p>`
+    : `<h2>🏆 النتائج العامة</h2><p>لم تُلعب أي مباراة بعد</p>`;
   container.appendChild(head);
 
   const toggleWrap = document.createElement("div");
   toggleWrap.style.textAlign = "center";
   toggleWrap.style.marginBottom = "14px";
   if (!showFullResults) {
-    toggleWrap.innerHTML = `<button class="btn btn-gold" id="btnRevealFull">🔓 إظهار الإجمالي الكامل (كل الدورات)</button>`;
+    toggleWrap.innerHTML = `<button class="btn btn-gold" id="btnRevealFull">🔓 إظهار الإجمالي الكامل (كل الجولات)</button>`;
     container.appendChild(toggleWrap);
     toggleWrap.querySelector("#btnRevealFull").onclick = () =>
       confirmModal({
         icon: "🔓",
         title: "إظهار الإجمالي الكامل؟",
-        message: "سيظهر ترتيب الفرق بإجمالي كل الدورات مجتمعة مع نقاط الأكاديمية.",
+        message: "سيظهر ترتيب الفرق بإجمالي كل الجولات مجتمعة مع نقاط الأكاديمية.",
         confirmLabel: "إظهار الإجمالي",
         onConfirm: () => {
           showFullResults = true;
@@ -1408,7 +1366,7 @@ function renderResults(container) {
         },
       });
   } else {
-    toggleWrap.innerHTML = `<button class="btn btn-outline" id="btnHideFull">🔒 رجوع لنتائج الدورة الحالية فقط</button>`;
+    toggleWrap.innerHTML = `<button class="btn btn-outline" id="btnHideFull">🔒 رجوع لنتائج آخر مباراة فقط</button>`;
     container.appendChild(toggleWrap);
     toggleWrap.querySelector("#btnHideFull").onclick = () => {
       showFullResults = false;
@@ -1471,38 +1429,39 @@ function renderResults(container) {
 
     fireConfetti(window.innerWidth / 2, 220, 40);
   } else {
-    const cycleNum = currentCycleNumber();
-    const stats = cycleMatchStats(cycleNum);
-    const ranked = rankedByCycle(cycleNum);
-    const podiumBlockCycle = (team, place) => {
-      const s = stats[team.id];
-      return `<div class="podium-place place-${place}">
-        <div class="podium-medal">${medals[place - 1]}</div>
-        ${avatarHtml(team, place === 1 ? 70 : 56)}
-        <div class="podium-name">${esc(team.name)}</div>
-        <div class="podium-total">${s.points} <small>نقطة</small></div>
-        <div class="podium-breakdown">لعب ${s.played} • فاز ${s.won} • تعادل ${s.drawn} • خسر ${s.lost}</div>
-        <div class="podium-step">المركز ${place === 1 ? "الأول" : place === 2 ? "الثاني" : "الثالث"}</div>
+    const last = lastRoundEntry();
+    if (last) {
+      const ranked = last.results;
+      const podiumBlockRound = (r, idx) => {
+        const team = getTeam(r.teamId) || { name: r.teamName, order: idx };
+        return `<div class="podium-place place-${idx + 1}">
+        <div class="podium-medal">${medals[idx]}</div>
+        ${avatarHtml(team, idx === 0 ? 70 : 56)}
+        <div class="podium-name">${esc(r.teamName)}</div>
+        <div class="podium-total">${r.leaguePoints} <small>نقطة</small></div>
+        <div class="podium-breakdown">${r.score} هدف</div>
+        <div class="podium-step">${esc(tierLabel(r))}</div>
       </div>`;
-    };
-    // الترتيب المطلوب في العرض: الثالث ثم الأول ثم الثاني
-    const order = [3, 1, 2].filter((p) => ranked[p - 1]);
-    const podium = document.createElement("div");
-    podium.className = "podium";
-    podium.innerHTML = order.map((p) => podiumBlockCycle(ranked[p - 1], p)).join("");
-    container.appendChild(podium);
+      };
+      // الترتيب المطلوب في العرض: الثالث ثم الأول ثم الثاني
+      const order = [2, 0, 1].filter((i) => ranked[i]);
+      const podium = document.createElement("div");
+      podium.className = "podium";
+      podium.innerHTML = order.map((i) => podiumBlockRound(ranked[i], i)).join("");
+      container.appendChild(podium);
 
-    if (ranked.length > 3) {
-      const rest = document.createElement("div");
-      rest.className = "card";
-      rest.innerHTML = `<h3>بقية المراكز</h3>${ranked
-        .slice(3)
-        .map(
-          (t, i) =>
-            `<div class="rest-row"><span>المركز ${i + 4}</span> ${avatarHtml(t, 32)} <b>${esc(t.name)}</b><span class="rest-total">${stats[t.id].points} نقطة</span></div>`
-        )
-        .join("")}`;
-      container.appendChild(rest);
+      if (ranked.length > 3) {
+        const rest = document.createElement("div");
+        rest.className = "card";
+        rest.innerHTML = `<h3>بقية المراكز</h3>${ranked
+          .slice(3)
+          .map(
+            (r) =>
+              `<div class="rest-row"><span>${esc(tierLabel(r))}</span> ${avatarHtml(getTeam(r.teamId) || { name: r.teamName, order: 0 }, 32)} <b>${esc(r.teamName)}</b><span class="rest-total">${r.leaguePoints} نقطة</span></div>`
+          )
+          .join("")}`;
+        container.appendChild(rest);
+      }
     }
   }
 
@@ -1525,113 +1484,150 @@ function resetLeague() {
 }
 
 /* ================= المباريات ================= */
-// المباريات تُلعب دائماً بلا أي شرط (أرض أو غيرها) - أرض الأكاديمية مطلوبة فقط لفتح متجر الأكاديمية
-function startMatchForTeam(team) {
-  if (ensureSchedule(stage())) persist();
-  const f = nextFixtureForTeam(stage(), team.id);
-  if (!f) {
-    notice("لا توجد مباراة لهذا الفريق الآن", `${team.name} أنهى مبارياته في هذا الدور. أكمل مباريات الفرق الأخرى أولاً.`, "✅");
-    return;
-  }
-  const home = getTeam(f.teamAId);
-  const away = getTeam(f.teamBId);
+// كل مباراة تضم كل فرق المرحلة معًا وتُحسب جولة واحدة. تُلعب دائماً بلا أي شرط (أرض أو غيرها) - الأرض مطلوبة فقط لفتح متجر الأكاديمية
+function startMatch() {
+  const teams = stage().teams;
   confirmModal({
     icon: "⚽",
     title: "جاهزون للمباراة؟",
-    html: `<div class="pre-match">
-        <span>${avatarHtml(home, 44)}<b>${esc(home.name)}</b><small>🏠 صاحب الأرض</small></span>
-        <span class="pre-vs">VS</span>
-        <span>${avatarHtml(away, 44)}<b>${esc(away.name)}</b><small>✈️ الضيف</small></span>
-      </div>
-      <p class="modal-message">🏟️ على ملعب ${esc(home.name)} — ${esc(legLabel(f.leg))}</p>`,
+    html: `<div class="pre-match">${teams
+      .map((t) => `<span>${avatarHtml(t, 44)}<b>${esc(t.name)}</b></span>`)
+      .join('<span class="pre-vs">VS</span>')}</div>
+      <p class="modal-message">${esc(roundLabel(nextRoundNumber()))} — مباراة كاملة لكل الفرق</p>`,
     confirmLabel: "🚀 ابدأ المباراة",
-    onConfirm: () => startFixture(f),
+    onConfirm: startMatchNow,
   });
 }
 
-function startFixture(fixture) {
+function startMatchNow() {
+  const ids = stage().teams.map((t) => t.id);
+  const perTeam = (value) => Object.fromEntries(ids.map((id) => [id, value]));
   pendingMatch = {
     id: "m_" + Date.now(),
-    fixture,
-    teamAId: fixture.teamAId,
-    teamBId: fixture.teamBId,
-    scoreA: 0,
-    scoreB: 0,
-    shield: { A: false, B: false },
-    armed: { A: null, B: null }, // بطاقة مضاعفة مفعّلة: الإجابة الصحيحة القادمة = هدفان
-    stopRival: null, // الجهة التي حصلت على السؤال القادم وحدها
+    round: nextRoundNumber(),
+    teamIds: ids,
+    scores: perTeam(0),
+    questions: CONFIG.questionsPerMatch, // عدّاد إرشادي بعدد الأهداف، قابل للزيادة أثناء المباراة
+    shield: perTeam(false), // الدرع للسؤال الحالي فقط
+    armed: perTeam(null), // بطاقة مضاعفة مرفوعة: الإجابة الصحيحة في هذا السؤال = هدفان
+    stopRival: null, // الفريق الذي حصل على السؤال الحالي وحده
+    stopCard: null, // البطاقة التي حجزت السؤال (توقف للخصم أو ركلة ترجيح)
+    active: [], // البطاقات المرفوعة في السؤال الحالي [{teamId, cardId}] - يأخذ الجوكر منها
+    used: Object.fromEntries(ids.map((id) => [id, []])), // بطاقات كل فريق المستخدمة في هذه المباراة (مرة لكل بطاقة، وبحد أقصى)
+    faceoff: null, // جزائية مشرف/طالب في السؤال الحالي: {by: teamId, cardId} - مواجهة إجبارية لكل الفرق
+    rescue: {}, // {teamId: true} بطاقة الإنقاذ مفعّلة حتى نهاية المباراة
+    discipline: Object.fromEntries(ids.map((id) => [id, { yellow: 0, red: 0 }])), // إنذارات وكروت هذه المباراة (للإحصائيات)
   };
   setView("match-live");
 }
 
-function liveResult(side) {
-  const mine = side === "A" ? pendingMatch.scoreA : pendingMatch.scoreB;
-  const theirs = side === "A" ? pendingMatch.scoreB : pendingMatch.scoreA;
-  return mine > theirs ? "win" : mine < theirs ? "loss" : "draw";
+// انتهى السؤال الحالي: يزول أثر كل البطاقات المرفوعة (الدرع والمضاعفة والتوقف) ولا ينتقل لأي سؤال آخر
+function clearQuestionState() {
+  pendingMatch.teamIds.forEach((id) => {
+    pendingMatch.shield[id] = false;
+    pendingMatch.armed[id] = null;
+  });
+  pendingMatch.stopRival = null;
+  pendingMatch.stopCard = null;
+  pendingMatch.faceoff = null;
+  pendingMatch.active = [];
+}
+
+function liveTiers() {
+  return computeMatchTiers(pendingMatch.teamIds.map((id) => ({ teamId: id, score: pendingMatch.scores[id] })));
+}
+
+function totalGoals() {
+  return pendingMatch.teamIds.reduce((n, id) => n + pendingMatch.scores[id], 0);
+}
+
+// ممنوع من الإجابة: بسبب "توقف للخصم" لفريق آخر - إلا إن كان محمياً بالدرع في هذا السؤال
+function isBlocked(teamId) {
+  return (
+    !!pendingMatch.stopRival &&
+    pendingMatch.stopRival !== teamId &&
+    !pendingMatch.shield[teamId]
+  );
 }
 
 function renderMatchLive(container) {
   if (!pendingMatch) return setView("hub");
-  const A = getTeam(pendingMatch.teamAId);
-  const B = getTeam(pendingMatch.teamBId);
-  const sideTeam = { A, B };
+  const teams = pendingMatch.teamIds.map((id) => getTeam(id));
+  const tiers = Object.fromEntries(liveTiers().map((r) => [r.teamId, r]));
+  const goals = totalGoals();
+  const questionsDone = goals >= pendingMatch.questions;
 
   const card = document.createElement("div");
   card.className = "card match-card";
   card.innerHTML = `
     <div class="match-head">
       <h3>⚽ مباراة مباشرة</h3>
-      <span class="match-chip">🏟️ على ملعب ${esc(A.name)}</span>
-      <span class="match-chip">${esc(legLabel(pendingMatch.fixture.leg))}</span>
+      <span class="match-chip">${esc(roundLabel(pendingMatch.round))}</span>
+      <span class="match-chip${questionsDone ? " done" : ""}">❓ الأسئلة (الأهداف): ${goals} / ${pendingMatch.questions}${questionsDone ? " ✅" : ""}
+        <button class="q-adjust" data-q-minus title="إنقاص عدد الأسئلة">−</button><button class="q-adjust" data-q-plus title="زيادة عدد الأسئلة">+</button></span>
     </div>`;
 
-  // لافتات البطاقات المفعّلة الآن
+  // لافتات البطاقات المفعّلة في السؤال الحالي
   const banners = [];
-  ["A", "B"].forEach((side) => {
-    if (pendingMatch.armed[side]) {
-      const c = effectCardById(pendingMatch.armed[side]);
+  teams.forEach((t) => {
+    if (pendingMatch.armed[t.id]) {
+      const c = effectCardById(pendingMatch.armed[t.id]);
       banners.push(
-        `<div class="effect-banner arm"><span>${c.icon} <b>${esc(c.name)}</b>: الإجابة الصحيحة القادمة لفريق <b>${esc(sideTeam[side].name)}</b> = هدفان</span>
-          <button class="btn btn-outline-light" data-clear-arm="${side}">✖ لم يُجب صحيحًا</button></div>`
+        `<div class="effect-banner arm"><span>${c.icon} <b>${esc(c.name)}</b>: الإجابة الصحيحة لفريق <b>${esc(t.name)}</b> في هذا السؤال = هدفان</span></div>`
       );
     }
-    if (pendingMatch.shield[side])
-      banners.push(`<div class="effect-banner shield"><span>🛡️ فريق <b>${esc(sideTeam[side].name)}</b> محمي بالدرع في هذه المباراة</span></div>`);
+    if (pendingMatch.shield[t.id])
+      banners.push(`<div class="effect-banner shield"><span>🛡️ فريق <b>${esc(t.name)}</b> محمي بالدرع في هذا السؤال فقط</span></div>`);
   });
   if (pendingMatch.stopRival) {
-    const s = pendingMatch.stopRival;
-    const other = s === "A" ? B : A;
+    const holder = getTeam(pendingMatch.stopRival);
+    const stopBy = effectCardById(pendingMatch.stopCard || "stop_rival");
+    const exempt = teams.filter((t) => t.id !== holder.id && pendingMatch.shield[t.id]).map((t) => t.name);
     banners.push(
-      `<div class="effect-banner stop"><span>✋ السؤال القادم لفريق <b>${esc(sideTeam[s].name)}</b> وحده — فريق ${esc(other.name)} ممنوع من الإجابة</span>
-        <button class="btn btn-outline-light" data-clear-stop>✔ انتهى السؤال</button></div>`
+      `<div class="effect-banner stop"><span>${stopBy.icon} ${esc(stopBy.name)}: السؤال لفريق <b>${esc(holder.name)}</b> وحده — الفرق الأخرى ممنوعة من الإجابة${
+        exempt.length ? ` (عدا المحميين بالدرع: ${esc(exempt.join("، "))})` : ""
+      }</span></div>`
     );
   }
+  if (pendingMatch.faceoff) {
+    const f = pendingMatch.faceoff;
+    const c = effectCardById(f.cardId);
+    const exempt = teams.filter((t) => t.id !== f.by && pendingMatch.shield[t.id]).map((t) => t.name);
+    banners.push(
+      `<div class="effect-banner stop"><span>${c.icon} ${esc(c.name)} لفريق <b>${esc(getTeam(f.by).name)}</b>: مواجهة إجبارية — ${esc(c.vsLabel)}، والإجابة لهم فقط في هذا السؤال${
+        exempt.length ? ` (عدا المحميين بالدرع: ${esc(exempt.join("، "))})` : ""
+      }</span></div>`
+    );
+  }
+  teams.forEach((t) => {
+    if (pendingMatch.rescue[t.id])
+      banners.push(`<div class="effect-banner shield"><span>🚑 الإنقاذ مفعّل لفريق <b>${esc(t.name)}</b>: إن انتهت المباراة وهو في المركز الأخير يحصل على نقطة دوري إضافية</span></div>`);
+  });
   if (banners.length) card.innerHTML += `<div class="effect-banners">${banners.join("")}</div>`;
 
-  const teamBox = (side, role) => {
-    const t = sideTeam[side];
-    const score = side === "A" ? pendingMatch.scoreA : pendingMatch.scoreB;
-    const blocked = pendingMatch.stopRival && pendingMatch.stopRival !== side;
+  const teamBox = (t) => {
+    const score = pendingMatch.scores[t.id];
+    const blocked = isBlocked(t.id);
+    const tr = tiers[t.id];
     return `<div class="match-team" style="--team-color:${teamColor(t)}">
-      <div class="match-role">${role}</div>
       <div class="match-team-name">${esc(t.name)}</div>
-      <div class="match-score" id="score${side}">${score}</div>
-      <div class="match-live-result">${resultChip(liveResult(side))}</div>
-      ${pendingMatch.armed[side] ? '<div class="armed-tag">⚽⚽ الهدف القادم ×2</div>' : ""}
+      <div class="match-score" id="score${t.id}">${score}</div>
+      <div class="match-live-result">${resultChip(tr.tier, esc(tierLabel(tr)))}</div>
+      ${pendingMatch.armed[t.id] ? '<div class="armed-tag">⚽⚽ الهدف القادم ×2</div>' : ""}
       <div style="display:flex; gap:8px; justify-content:center;">
-        <button class="btn btn-primary goal-btn" data-plus="${side}" ${blocked ? "disabled" : ""}>${blocked ? "✋ ممنوع" : "+ هدف"}</button>
-        <button class="btn btn-outline-light" data-minus="${side}">-</button>
+        <button class="btn btn-primary goal-btn" data-plus="${t.id}" ${blocked ? "disabled" : ""}>${blocked ? "✋ ممنوع" : "+ هدف"}</button>
+        <button class="btn btn-outline-light" data-minus="${t.id}">-</button>
       </div>
     </div>`;
   };
 
-  card.innerHTML += `<div class="match-vs">${teamBox("A", "🏠 صاحب الأرض")}<div class="vs-badge">VS</div>${teamBox("B", "✈️ الضيف")}</div>`;
+  card.innerHTML += `<div class="match-vs">${teams.map(teamBox).join('<div class="vs-badge">VS</div>')}</div>
+    <div style="text-align:center; margin-top:14px;"><button class="btn btn-gold" id="endQuestion">✔ انتهى السؤال (يزول أثر البطاقات المرفوعة)</button></div>`;
   container.appendChild(card);
 
   const cardsPanel = document.createElement("div");
   cardsPanel.className = "grid";
-  cardsPanel.appendChild(buildLiveCardPicker(A, "A"));
-  cardsPanel.appendChild(buildLiveCardPicker(B, "B"));
+  teams.forEach((t) => cardsPanel.appendChild(buildLiveCardPicker(t)));
   container.appendChild(cardsPanel);
 
   const endWrap = document.createElement("div");
@@ -1642,99 +1638,97 @@ function renderMatchLive(container) {
 
   card.querySelectorAll("[data-plus]").forEach((btn) => {
     btn.onclick = (e) => {
-      const side = btn.dataset.plus;
-      const add = pendingMatch.armed[side] ? 2 : 1;
-      if (side === "A") pendingMatch.scoreA += add;
-      else pendingMatch.scoreB += add;
-      pendingMatch.armed[side] = null;
-      if (pendingMatch.stopRival === side) pendingMatch.stopRival = null;
+      const id = btn.dataset.plus;
+      const add = pendingMatch.armed[id] ? 2 : 1;
+      pendingMatch.scores[id] += add;
+      clearQuestionState(); // الإجابة تُنهي السؤال، فيزول أثر كل بطاقاته
       const x = e.clientX;
       const y = e.clientY;
       render();
-      const el = document.getElementById("score" + side);
+      const el = document.getElementById("score" + id);
       if (el) el.classList.add("score-pop");
       fireConfetti(x, y, add === 2 ? 40 : 18);
     };
   });
   card.querySelectorAll("[data-minus]").forEach((btn) => {
     btn.onclick = () => {
-      const side = btn.dataset.minus;
-      if (side === "A") pendingMatch.scoreA = Math.max(0, pendingMatch.scoreA - 1);
-      else pendingMatch.scoreB = Math.max(0, pendingMatch.scoreB - 1);
+      const id = btn.dataset.minus;
+      pendingMatch.scores[id] = Math.max(0, pendingMatch.scores[id] - 1);
       render();
     };
   });
-  card.querySelectorAll("[data-clear-arm]").forEach((btn) => {
-    btn.onclick = () => {
-      pendingMatch.armed[btn.dataset.clearArm] = null;
-      render();
-    };
-  });
-  const clearStop = card.querySelector("[data-clear-stop]");
-  if (clearStop)
-    clearStop.onclick = () => {
-      pendingMatch.stopRival = null;
-      render();
-    };
+  card.querySelector("[data-q-minus]").onclick = () => {
+    pendingMatch.questions = Math.max(1, pendingMatch.questions - 1);
+    render();
+  };
+  card.querySelector("[data-q-plus]").onclick = () => {
+    pendingMatch.questions += 1;
+    render();
+  };
+  card.querySelector("#endQuestion").onclick = () => {
+    clearQuestionState();
+    render();
+  };
 
   endWrap.querySelector("#endMatch").onclick = () => {
-    const rA = liveResult("A");
-    const summary = rA === "draw" ? "تعادل" : `فوز ${rA === "win" ? A.name : B.name}`;
+    const summary = liveTiers()
+      .map((r) => `${getTeam(r.teamId).name} ${r.score}`)
+      .join(" • ");
     confirmModal({
       icon: "🏁",
       title: "إنهاء المباراة وحساب النقاط؟",
-      message: `النتيجة: ${A.name} ${pendingMatch.scoreA} : ${pendingMatch.scoreB} ${B.name} — ${summary}`,
+      message: `النتيجة: ${summary}`,
       confirmLabel: "إنهاء وحساب النقاط",
-      onConfirm: () => finalizeMatch(A, B),
+      onConfirm: finalizeMatch,
     });
   };
   endWrap.querySelector("#cancelMatch").onclick = () =>
     confirmModal({
       icon: "⚠️",
       title: "إلغاء المباراة؟",
-      message: "لن تُحتسب أي نتيجة، وتبقى المباراة في الجدول لتُلعب لاحقًا.",
+      message: "لن تُحتسب أي نتيجة، ويمكنك بدء المباراة من جديد لاحقًا.",
       confirmLabel: "إلغاء المباراة",
       cancelLabel: "متابعة اللعب",
       danger: true,
       onConfirm: () => {
         pendingMatch = null;
         clearPendingMatch();
-        setView("team");
+        setView("hub");
       },
     });
 }
 
-// كل بطاقات المباراة لفريق - المدير يختار فقط البطاقة التي يملكها الفريق فعلياً (مطبوعة حضورياً)
-function buildLiveCardPicker(team, side) {
+// بطاقات فريق في المباراة - المدير يختار البطاقة التي رفعها الفريق فعلياً (مطبوعة حضورياً)؛ بلا حد لعدد مرات الاستخدام
+function buildLiveCardPicker(team) {
   const box = document.createElement("div");
   box.className = "card live-cards";
   box.style.setProperty("--team-color", teamColor(team));
-  box.innerHTML = `<h3>🃏 بطاقات ${esc(team.name)}</h3>`;
+  box.innerHTML = `<h3>🃏 بطاقات ${esc(team.name)} <small>(${pendingMatch.used[team.id].length} / ${CONFIG.maxCardsPerMatch})</small></h3>`;
   const wrap = document.createElement("div");
   wrap.className = "card-tiles-wrap";
   CONFIG.effectCards.forEach((c) => {
-    const used = team.cardUsage[c.id] === pendingMatch.id;
+    const raised = pendingMatch.active.some((a) => a.teamId === team.id && a.cardId === c.id);
+    const used = pendingMatch.used[team.id].includes(c.id);
     const tile = document.createElement("button");
     tile.className = "card-tile" + (used ? " used" : "");
     tile.innerHTML = `<span class="card-tile-icon">${c.icon}</span><span class="card-tile-name">${esc(c.name)}</span>
-      <span class="card-tile-state">${used ? "✅ استُخدمت" : "جاهزة"}</span>`;
-    tile.onclick = () => useLiveCard(team, side, c);
+      <span class="card-tile-state">${raised ? "🔥 مرفوعة الآن" : used ? "✅ استُخدمت" : "جاهزة"}</span>`;
+    tile.onclick = () => useLiveCard(team, c);
     wrap.appendChild(tile);
   });
   box.appendChild(wrap);
 
-  // البطاقات التأديبية (إنذار/كرت أحمر) - مرة واحدة لكل نوع لكل فريق في المباراة، منفصلة عن حد الـ3 بطاقات أعلاه، وتتجدد كل مباراة
+  // البطاقات التأديبية (إنذار/كرت أحمر) - بلا أي حد لعدد المرات
   const dWrap = document.createElement("div");
   dWrap.className = "card-tiles-wrap";
   [
     { type: "yellow", icon: "🟨", name: "إنذار شفوي" },
     { type: "red", icon: "🟥", name: "كرت أحمر" },
   ].forEach((d) => {
-    const used = team.disciplineUsage[d.type] === pendingMatch.id;
     const tile = document.createElement("button");
-    tile.className = "card-tile" + (used ? " used" : "");
+    tile.className = "card-tile";
     tile.innerHTML = `<span class="card-tile-icon">${d.icon}</span><span class="card-tile-name">${d.name}</span>
-      <span class="card-tile-state">${used ? "✅ سُجِّلت" : "جاهزة"}</span>`;
+      <span class="card-tile-state">الإجمالي: ${d.type === "yellow" ? team.yellowCards : team.redCards}</span>`;
     tile.onclick = () => useDisciplineCard(team, d.type);
     dWrap.appendChild(tile);
   });
@@ -1743,9 +1737,6 @@ function buildLiveCardPicker(team, side) {
 }
 
 function useDisciplineCard(team, type) {
-  if (team.disciplineUsage[type] === pendingMatch.id) {
-    return notice("مُسجَّلة بالفعل", `سُجِّلت هذه البطاقة لفريق ${team.name} في هذه المباراة بالفعل.`, type === "yellow" ? "🟨" : "🟥");
-  }
   if (type === "yellow") {
     return confirmModal({
       icon: "🟨",
@@ -1754,7 +1745,7 @@ function useDisciplineCard(team, type) {
       confirmLabel: "تسجيل الإنذار",
       onConfirm: () => {
         team.yellowCards++;
-        team.disciplineUsage.yellow = pendingMatch.id;
+        if (pendingMatch) pendingMatch.discipline[team.id].yellow++;
         team.cardLog.push({ at: nowISO(), text: "🟨 إنذار شفوي" });
         persist();
         render();
@@ -1769,9 +1760,11 @@ function useDisciplineCard(team, type) {
     danger: true,
     onConfirm: () => {
       team.redCards++;
-      team.disciplineUsage.red = pendingMatch.id;
+      if (pendingMatch) pendingMatch.discipline[team.id].red++;
       stage().teams.forEach((t) => {
-        if (t.id !== team.id) t.balance += CONFIG.redCardBonusForOthers;
+        if (t.id === team.id) return;
+        t.balance += CONFIG.redCardBonusForOthers;
+        t.cardLog.push({ at: nowISO(), text: `🟥 +${CONFIG.redCardBonusForOthers} رصيد بسبب كرت أحمر على فريق ${team.name}` });
       });
       team.cardLog.push({ at: nowISO(), text: `🟥 كرت أحمر — حصلت كل الفرق الأخرى على +${CONFIG.redCardBonusForOthers} رصيد، وبلا أي نقاط لهذا الفريق` });
       persist();
@@ -1780,29 +1773,45 @@ function useDisciplineCard(team, type) {
   });
 }
 
-function useLiveCard(team, side, card) {
-  const oppSide = side === "A" ? "B" : "A";
-  const opp = getTeam(oppSide === "A" ? pendingMatch.teamAId : pendingMatch.teamBId);
-  if (team.cardUsage[card.id] === pendingMatch.id) {
+// رفع بطاقة في السؤال الحالي: تُحسب مستخدمة لهذه المباراة (حتى لو جاوب غير الفريق)، وتُسجَّل مرفوعة ليأخذها الجوكر، ويزول أثرها بانتهاء السؤال
+function raiseCard(team, card) {
+  pendingMatch.used[team.id].push(card.id);
+  pendingMatch.active.push({ teamId: team.id, cardId: card.id });
+  team.cardLog.push({ at: nowISO(), text: `${card.icon} ${card.name} — في ${roundLabel(pendingMatch.round)}` });
+}
+
+function useLiveCard(team, card) {
+  const used = pendingMatch.used[team.id];
+  if (used.includes(card.id)) {
     return notice("البطاقة مستخدمة", `استخدم فريق ${team.name} بطاقة «${card.name}» في هذه المباراة بالفعل.`, card.icon);
   }
-  const usedThisMatch = Object.values(team.cardUsage).filter((v) => v === pendingMatch.id).length;
-  if (usedThisMatch >= CONFIG.maxCardsPerMatch) {
+  if (used.length >= CONFIG.maxCardsPerMatch) {
     return notice(
       "بلغ الفريق الحد الأقصى للبطاقات",
       `لا يمكن لفريق ${team.name} استخدام أكثر من ${CONFIG.maxCardsPerMatch} بطاقات في المباراة الواحدة.`,
       "🃏"
     );
   }
-  if (card.effect === "steal") return useJokerCard(team, side, card, opp, oppSide);
-  if (card.effect === "stopRival" && pendingMatch.shield[oppSide]) {
-    return notice("🛡️ الخصم محمي بالدرع", `لا يمكن استخدام «${card.name}» ضد فريق ${opp.name} لأنه فعّل الدرع في هذه المباراة. البطاقة لم تُستهلك.`, "🛡️");
+  if (card.effect === "steal") return useJokerCard(team, card);
+  const others = pendingMatch.teamIds.filter((id) => id !== team.id);
+  const holdsQuestion = card.effect === "stopRival" || card.effect === "penalty";
+  if (card.effect === "faceoff" && pendingMatch.faceoff) {
+    return notice("توجد جزائية في هذا السؤال", "أنهِ السؤال الحالي أولاً (زر «انتهى السؤال») ثم استخدم البطاقة.", card.icon);
   }
-  if (card.effect === "stopRival" && pendingMatch.stopRival) {
-    return notice("يوجد سؤال محجوز الآن", "أنهِ السؤال المحجوز الحالي أولاً ثم استخدم البطاقة.", "✋");
+  if (card.effect === "faceoff" && others.every((id) => pendingMatch.shield[id])) {
+    return notice("🛡️ كل الخصوم محميون بالدرع", `لا يمكن استخدام «${card.name}» لأن كل الفرق الأخرى فعّلت الدرع في هذا السؤال. البطاقة لم تُستهلك.`, "🛡️");
   }
-  if (card.effect === "arm" && pendingMatch.armed[side]) {
-    return notice("مضاعفة مفعّلة بالفعل", `لدى فريق ${team.name} مضاعفة مفعّلة للإجابة القادمة.`, card.icon);
+  if (card.effect === "shield" && pendingMatch.shield[team.id]) {
+    return notice("الدرع مفعّل", `فريق ${team.name} محمي بالدرع في هذا السؤال بالفعل.`, card.icon);
+  }
+  if (holdsQuestion && pendingMatch.stopRival) {
+    return notice("يوجد سؤال محجوز الآن", "أنهِ السؤال الحالي أولاً (زر «انتهى السؤال») ثم استخدم البطاقة.", "✋");
+  }
+  if (holdsQuestion && others.every((id) => pendingMatch.shield[id])) {
+    return notice("🛡️ كل الخصوم محميون بالدرع", `لا يمكن استخدام «${card.name}» لأن كل الفرق الأخرى فعّلت الدرع في هذا السؤال. البطاقة لم تُستهلك.`, "🛡️");
+  }
+  if (card.effect === "arm" && pendingMatch.armed[team.id]) {
+    return notice("مضاعفة مفعّلة بالفعل", `لدى فريق ${team.name} مضاعفة مفعّلة في هذا السؤال.`, card.icon);
   }
   confirmModal({
     icon: card.icon,
@@ -1810,149 +1819,164 @@ function useLiveCard(team, side, card) {
     html: `<div class="card-effect-text">${esc(card.confirmText.replace("{team}", team.name))}</div>`,
     confirmLabel: "✅ تأكيد الاستخدام",
     onConfirm: () => {
-      if (card.effect === "shield") pendingMatch.shield[side] = true;
-      if (card.effect === "arm") pendingMatch.armed[side] = card.id;
-      if (card.effect === "stopRival") pendingMatch.stopRival = side;
-      team.cardUsage[card.id] = pendingMatch.id;
-      team.cardLog.push({ at: nowISO(), text: `${card.icon} ${card.name} — في مباراة ضد ${opp.name}` });
+      if (card.effect === "shield") pendingMatch.shield[team.id] = true;
+      if (card.effect === "arm") pendingMatch.armed[team.id] = card.id;
+      if (card.effect === "rescue") {
+        // بطاقة نهاية المباراة: تبقى حتى الإنهاء ولا ترتبط بالسؤال، ولا يأخذها الجوكر
+        pendingMatch.rescue[team.id] = true;
+        pendingMatch.used[team.id].push(card.id);
+        team.cardLog.push({ at: nowISO(), text: `${card.icon} ${card.name} — في ${roundLabel(pendingMatch.round)}` });
+        persist();
+        render();
+        return;
+      }
+      if (holdsQuestion) {
+        pendingMatch.stopRival = team.id;
+        pendingMatch.stopCard = card.id;
+      }
+      if (card.effect === "faceoff") pendingMatch.faceoff = { by: team.id, cardId: card.id };
+      raiseCard(team, card);
       persist();
       render();
     },
   });
 }
 
-// الجوكر: يأخذ إحدى بطاقات الخصم غير المستخدمة بعد (عدا الدرع والجوكر نفسه) ويستخدمها فوراً لصالح هذا الفريق -
-// الخصم يفقدها فعلياً (لا يمكنه استخدامها بعد ذلك)، ويحميه الدرع من هذا مثل أي بطاقة أخرى تُستخدم ضده
-function useJokerCard(team, side, card, opp, oppSide) {
-  if (pendingMatch.shield[oppSide]) {
-    return notice("🛡️ الخصم محمي بالدرع", `لا يمكن استخدام «${card.name}» ضد فريق ${opp.name} لأنه فعّل الدرع في هذه المباراة. البطاقة لم تُستهلك.`, "🛡️");
-  }
-  const stealable = CONFIG.effectCards.filter((c) => c.id !== "shield" && c.id !== "joker" && opp.cardUsage[c.id] !== pendingMatch.id);
-  if (!stealable.length) {
-    return notice("لا توجد بطاقة لسرقتها", `فريق ${opp.name} ليس لديه أي بطاقة متاحة يأخذها الجوكر الآن.`, "🃏");
+// الجوكر: يأخذ البطاقة التي رفعها خصم في السؤال الحالي ويستخدمها لصالح هذا الفريق (فيفقدها الخصم).
+// لا يستطيع أخذ الدرع، ولا الأخذ من فريق محمي بالدرع في هذا السؤال
+function useJokerCard(team, card) {
+  const candidates = pendingMatch.active.filter((a) => a.teamId !== team.id && a.cardId !== "shield" && !pendingMatch.shield[a.teamId]);
+  if (!candidates.length) {
+    const anyRaised = pendingMatch.active.some((a) => a.teamId !== team.id);
+    return notice(
+      "لا توجد بطاقة يمكن أخذها",
+      anyRaised
+        ? "الدرع يحمي من الجوكر: لا يمكن أخذ الدرع نفسه ولا الأخذ من فريق محمي بالدرع."
+        : "لا يوجد خصم رفع بطاقة في السؤال الحالي. ارفع الجوكر بعد أن يرفع الخصم بطاقته.",
+      "🃏"
+    );
   }
   chooseModal({
     icon: "🃏",
-    title: `الجوكر: اختر بطاقة فريق ${opp.name} لتأخذها لصالح ${team.name}`,
-    options: stealable.map((c) => ({ label: `${c.icon} ${c.name}`, value: c.id })),
-    onChoose: (stolenId) => {
-      const stolen = effectCardById(stolenId);
-      if (opp.cardUsage[stolenId] === pendingMatch.id) {
-        return notice("لم تعد متاحة", `استُخدمت بطاقة «${stolen.name}» بالفعل قبل إتمام السرقة.`, stolen.icon);
+    title: `الجوكر: اختر البطاقة المرفوعة التي يأخذها ${team.name}`,
+    options: candidates.map((a) => {
+      const c = effectCardById(a.cardId);
+      return { label: `${c.icon} ${c.name} — فريق ${getTeam(a.teamId).name}`, value: `${a.teamId}|${a.cardId}` };
+    }),
+    onChoose: (val) => {
+      const [fromId, cardId] = val.split("|");
+      const stolen = effectCardById(cardId);
+      const from = getTeam(fromId);
+      if (stolen.effect === "arm" && pendingMatch.armed[team.id]) {
+        return notice("مضاعفة مفعّلة بالفعل", `لدى فريق ${team.name} مضاعفة مفعّلة في هذا السؤال.`, stolen.icon);
       }
-      if (stolen.effect === "stopRival" && pendingMatch.stopRival) {
-        return notice("يوجد سؤال محجوز الآن", "أنهِ السؤال المحجوز الحالي أولاً ثم استخدم البطاقة.", "✋");
+      pendingMatch.active = pendingMatch.active.filter((a) => !(a.teamId === fromId && a.cardId === cardId));
+      if (stolen.effect === "arm") {
+        pendingMatch.armed[fromId] = null;
+        pendingMatch.armed[team.id] = cardId;
       }
-      if (stolen.effect === "arm" && pendingMatch.armed[side]) {
-        return notice("مضاعفة مفعّلة بالفعل", `لدى فريق ${team.name} مضاعفة مفعّلة للإجابة القادمة.`, stolen.icon);
-      }
-      if (stolen.effect === "arm") pendingMatch.armed[side] = stolen.id;
-      if (stolen.effect === "stopRival") pendingMatch.stopRival = side;
-      team.cardUsage[card.id] = pendingMatch.id;
-      team.cardUsage[stolenId] = pendingMatch.id;
-      opp.cardUsage[stolenId] = pendingMatch.id;
-      team.cardLog.push({ at: nowISO(), text: `🃏 الجوكر — أخذ بطاقة «${stolen.name}» من فريق ${opp.name} واستخدمها` });
-      opp.cardLog.push({ at: nowISO(), text: `🃏 فقد فريق ${opp.name} بطاقة «${stolen.name}» بسبب جوكر ${team.name}` });
+      if (stolen.effect === "stopRival" || stolen.effect === "penalty") pendingMatch.stopRival = team.id;
+      if (stolen.effect === "faceoff" && pendingMatch.faceoff) pendingMatch.faceoff.by = team.id;
+      pendingMatch.used[team.id].push(card.id, cardId); // الجوكر نفسه والبطاقة المأخوذة كلاهما يُحسبان على الفريق (كما كان سابقاً)
+      pendingMatch.active.push({ teamId: team.id, cardId });
+      team.cardLog.push({ at: nowISO(), text: `${card.icon} ${card.name} — أخذ «${stolen.name}» من فريق ${from.name} في ${roundLabel(pendingMatch.round)}` });
+      from.cardLog.push({ at: nowISO(), text: `${card.icon} فقد بطاقة «${stolen.name}» بسبب جوكر فريق ${team.name} في ${roundLabel(pendingMatch.round)}` });
       persist();
       render();
     },
   });
 }
 
-function finalizeMatch(teamA, teamB) {
-  const { scoreA, scoreB } = pendingMatch;
-  teamA.matches.played++;
-  teamB.matches.played++;
-  teamA.matches.goalsFor += scoreA;
-  teamA.matches.goalsAgainst += scoreB;
-  teamB.matches.goalsFor += scoreB;
-  teamB.matches.goalsAgainst += scoreA;
-
-  const pointsBefore = { A: teamA.matches.points, B: teamB.matches.points };
-  let resultA;
-  let resultB;
-  if (scoreA > scoreB) {
-    resultA = "win";
-    resultB = "loss";
-    teamA.matches.won++;
-    teamA.matches.points += CONFIG.matchPoints.win;
-    teamB.matches.lost++;
-    teamB.matches.points += scoreB > 0 ? CONFIG.matchPoints.lossIfScored : CONFIG.matchPoints.lossIfZero;
-  } else if (scoreB > scoreA) {
-    resultA = "loss";
-    resultB = "win";
-    teamB.matches.won++;
-    teamB.matches.points += CONFIG.matchPoints.win;
-    teamA.matches.lost++;
-    teamA.matches.points += scoreA > 0 ? CONFIG.matchPoints.lossIfScored : CONFIG.matchPoints.lossIfZero;
-  } else {
-    resultA = resultB = "draw";
-    teamA.matches.drawn++;
-    teamB.matches.drawn++;
-    teamA.matches.points += CONFIG.matchPoints.drawEach;
-    teamB.matches.points += CONFIG.matchPoints.drawEach;
-  }
-
-  // الرصيد الإضافي = مكافأة الأهداف العامة + مكافأة الملكية + مكافأة ثابتة حسب النتيجة، لكل فريق بحسب نتيجته هو (لا تمس نقاط الدوري أبداً)
-  const bonusA = goalBalanceBonus(resultA, scoreA) + ownershipBalanceBonus(teamA, resultA) + resultBalanceBonus(resultA);
-  const bonusB = goalBalanceBonus(resultB, scoreB) + ownershipBalanceBonus(teamB, resultB) + resultBalanceBonus(resultB);
-  teamA.balance += bonusA;
-  teamB.balance += bonusB;
-  teamA.lastOpponentId = teamB.id;
-  teamB.lastOpponentId = teamA.id;
-
-  const fixture = pendingMatch.fixture;
-  fixture.played = true;
-  fixture.scoreA = scoreA;
-  fixture.scoreB = scoreB;
-
-  stage().matchLog.push({
-    at: nowISO(),
-    leg: fixture.leg,
-    teamAId: teamA.id,
-    teamBId: teamB.id,
-    teamAName: teamA.name,
-    teamBName: teamB.name,
-    scoreA,
-    scoreB,
-    bonusA,
-    bonusB,
+// تنتهي المباراة بيد المدير: تُرتَّب كل الفرق حسب أهدافها، وتُمنح النقاط والرصيد حسب المركز (التعادل بنقاط التعادل)
+function finalizeMatch() {
+  const results = computeMatchTiers(pendingMatch.teamIds.map((id) => ({ teamId: id, score: pendingMatch.scores[id] })));
+  const totalScore = results.reduce((n, r) => n + r.score, 0);
+  results.forEach((r) => {
+    const team = getTeam(r.teamId);
+    r.teamName = team.name;
+    r.leaguePoints = leaguePointsFor(r.tier, r.score);
+    r.rescued = r.tier === "loss" && !!pendingMatch.rescue[r.teamId];
+    if (r.rescued) r.leaguePoints += 1; // بطاقة الإنقاذ: نقطة إضافية فوق نقاط الخسارة
+    r.cards = pendingMatch.used[r.teamId].slice();
+    r.yellow = pendingMatch.discipline[r.teamId].yellow;
+    r.red = pendingMatch.discipline[r.teamId].red;
+    r.bonus = goalBalanceBonus(r.tier, r.score) + ownershipBalanceBonus(team, r.tier) + resultBalanceBonus(r.tier);
+    team.matches.played++;
+    team.matches.goalsFor += r.score;
+    team.matches.goalsAgainst += totalScore - r.score;
+    if (r.tier === "win") team.matches.won++;
+    else if (r.tier === "draw") team.matches.drawn++;
+    else team.matches.lost++;
+    team.matches.points += r.leaguePoints;
+    team.balance += r.bonus;
   });
+  const entry = { at: nowISO(), round: pendingMatch.round, questions: pendingMatch.questions, results };
+  stage().matchLog.push(entry);
 
   pendingMatch = null;
   clearPendingMatch();
   persist();
-  showWinnerModal({
-    teamA,
-    teamB,
-    scoreA,
-    scoreB,
-    resultA,
-    resultB,
-    bonusA,
-    bonusB,
-    leagueA: teamA.matches.points - pointsBefore.A,
-    leagueB: teamB.matches.points - pointsBefore.B,
-  });
+  showWinnerModal(entry);
 }
 
-function showWinnerModal(r) {
-  const winner = r.resultA === "win" ? r.teamA : r.resultB === "win" ? r.teamB : null;
-  const side = (team, result, bonus, league) => `
-    <div class="winner-side">
-      ${avatarHtml(team, 44)}
-      <b>${esc(team.name)}</b>
-      ${resultChip(result)}
-      <span class="winner-gain">⚽ +${league} نقاط دوري</span>
-      <span class="winner-gain">💰 +${bonus} رصيد</span>
+// إحصائيات بسيطة للمباراة المنتهية (تُعرض في نافذة النهاية)
+function matchStatsHtml(entry) {
+  const r = entry.results;
+  const totalGoals = r.reduce((n, x) => n + x.score, 0);
+  const totalCards = r.reduce((n, x) => n + (x.cards || []).length, 0);
+  const cardIcons = (ids) =>
+    (ids || [])
+      .map((id) => effectCardById(id))
+      .filter(Boolean)
+      .map((c) => `<span title="${esc(c.name)}">${c.icon}</span>`)
+      .join(" ") || "—";
+  return `<div class="match-stats">
+    <h3>📊 إحصائيات المباراة</h3>
+    <div class="match-stats-summary">⚽ مجموع الأهداف: <b>${totalGoals}</b>${entry.questions ? ` من ${entry.questions} أسئلة` : ""} • 🃏 البطاقات المستخدمة: <b>${totalCards}</b></div>
+    <table class="match-stats-table">
+      <thead><tr><th>الفريق</th><th>الأهداف</th><th>البطاقات</th><th>🟨</th><th>🟥</th><th>نقاط الدوري</th><th>الرصيد</th></tr></thead>
+      <tbody>${r
+        .map(
+          (x) => `<tr><td>${esc(x.teamName)}${x.rescued ? " 🚑" : ""}</td><td>${x.score}</td><td>${cardIcons(x.cards)}</td><td>${x.yellow || 0}</td><td>${
+            x.red || 0
+          }</td><td>+${x.leaguePoints}</td><td>+${x.bonus}</td></tr>`
+        )
+        .join("")}</tbody>
+    </table>
+  </div>`;
+}
+
+// نافذة نهاية المباراة: منصة تتويج تفاعلية (الثالث ثم الأول ثم الثاني) لكل فرق المباراة
+function showWinnerModal(entry) {
+  const r = entry.results;
+  const winner = r[0].tier === "win" ? r[0] : null;
+  const medals = ["🥇", "🥈", "🥉"];
+  const block = (x, idx) => `
+    <div class="podium-place place-${idx + 1}">
+      <div class="podium-medal">${medals[idx]}</div>
+      ${avatarHtml(getTeam(x.teamId) || { name: x.teamName, order: idx }, idx === 0 ? 60 : 48)}
+      <div class="podium-name">${esc(x.teamName)}</div>
+      <div class="podium-total">+${x.leaguePoints} <small>نقطة دوري</small></div>
+      <div class="podium-breakdown">🎯 ${x.score} هدف</div>
+      <div class="podium-gain">💰 +${x.bonus} رصيد</div>
+      <div class="podium-step">${esc(tierLabel(x))}</div>
     </div>`;
+  const order = [2, 0, 1].filter((i) => r[i]);
+  const rest = r.slice(3);
   const m = openModal({
     boxClass: "winner-box",
     onClose: () => setView("results"),
     html: `
-      ${winner ? `<div class="winner-trophy">🏆</div><h2>الفائز: ${esc(winner.name)}</h2>` : `<div class="winner-trophy">🤝</div><h2>تعادل!</h2>`}
-      <div class="winner-score">${esc(r.teamA.name)} <span>${r.scoreA} : ${r.scoreB}</span> ${esc(r.teamB.name)}</div>
-      <div class="winner-sides">${side(r.teamA, r.resultA, r.bonusA, r.leagueA)}${side(r.teamB, r.resultB, r.bonusB, r.leagueB)}</div>
+      ${winner ? `<div class="winner-trophy">🏆</div><h2>الفائز: ${esc(winner.teamName)}</h2>` : `<div class="winner-trophy">🤝</div><h2>تعادل في الصدارة!</h2>`}
+      <div class="podium winner-podium">${order.map((i) => block(r[i], i)).join("")}</div>
+      ${
+        rest.length
+          ? `<div class="winner-rest">${rest
+              .map((x) => `<div>${esc(tierLabel(x))} — <b>${esc(x.teamName)}</b>: 🎯 ${x.score} • ⚽ +${x.leaguePoints} • 💰 +${x.bonus}</div>`)
+              .join("")}</div>`
+          : ""
+      }
+      ${matchStatsHtml(entry)}
       <button class="btn-start modal-wide-btn" data-go>📊 إلى النتائج</button>`,
   });
   fireConfetti(window.innerWidth / 2, 120, 70);
@@ -1982,15 +2006,23 @@ function fireConfetti(x, y, count) {
 function tryResumePendingMatch() {
   const saved = loadPendingMatch();
   if (!saved || !saved.pendingMatch || !saved.stageId || !state.stages[saved.stageId]) return false;
+  const pm = saved.pendingMatch;
   const savedStage = state.stages[saved.stageId];
-  const f = saved.pendingMatch.fixture;
-  const realFixture = savedStage.schedule.find(
-    (x) => !x.played && x.leg === f.leg && x.teamAId === f.teamAId && x.teamBId === f.teamBId
-  );
-  if (!realFixture) return false; // الفريقان أو المباراة لم يعودا كما كانا - يُتجاهل الاسترجاع بأمان
+  const valid =
+    Array.isArray(pm.teamIds) && pm.teamIds.length >= 2 && pm.teamIds.every((id) => savedStage.teams.some((t) => t.id === id));
+  if (!valid) {
+    // لقطة بالنظام القديم (مباراة بين فريقين) أو فرق تغيّرت - تُتجاهل بأمان
+    clearPendingMatch();
+    return false;
+  }
+  if (!pm.used) pm.used = Object.fromEntries(pm.teamIds.map((id) => [id, []]));
+  if (pm.stopCard === undefined) pm.stopCard = null;
+  if (pm.faceoff === undefined) pm.faceoff = null;
+  if (!pm.rescue) pm.rescue = {};
+  if (!pm.discipline) pm.discipline = Object.fromEntries(pm.teamIds.map((id) => [id, { yellow: 0, red: 0 }]));
   activeStageId = saved.stageId;
-  activeTeamId = f.teamAId;
-  pendingMatch = { ...saved.pendingMatch, fixture: realFixture };
+  activeTeamId = pm.teamIds[0];
+  pendingMatch = pm;
   currentView = "match-live";
   return true;
 }

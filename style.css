@@ -676,6 +676,8 @@ select, input[type="text"], input[type="number"] {
   font-size: 13px;
 }
 
+button.effect-info { cursor: pointer; font-family: inherit; text-align: start; }
+button.effect-info:hover { border-color: var(--gold); }
 .effect-info b { font-size: 16px; }
 .effect-info-icon { font-size: 28px; }
 
@@ -1230,3 +1232,46 @@ select, input[type="text"], input[type="number"] {
   .team-header { flex-direction: column; text-align: center; }
   .team-header-chips { justify-content: center; }
 }
+
+/* عدّاد أسئلة المباراة */
+.match-chip.done { background: var(--teal); }
+.q-adjust {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  margin-inline-start: 6px;
+  cursor: pointer;
+  font-weight: 800;
+  font-family: inherit;
+}
+.q-adjust:hover { background: rgba(255, 255, 255, 0.32); }
+
+/* منصة التتويج داخل نافذة نهاية المباراة */
+.modal-box.winner-box { max-width: 760px; }
+.winner-podium { margin: 14px 0 10px; gap: 10px; }
+.winner-podium .podium-place { width: 180px; padding: 14px 8px 12px; }
+.winner-podium .podium-place.place-1 { min-height: 280px; }
+.winner-podium .podium-place.place-2 { min-height: 245px; }
+.winner-podium .podium-place.place-3 { min-height: 215px; }
+.winner-podium .podium-medal { font-size: 36px; }
+.winner-podium .podium-name { font-size: 17px; }
+.winner-podium .podium-total { font-size: 28px; }
+.podium-gain { font-size: 13px; font-weight: 800; }
+.winner-rest { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; font-size: 14px; }
+@media (max-width: 640px) {
+  .winner-podium .podium-place { width: 31%; }
+  .winner-podium .podium-name { font-size: 14px; }
+  .winner-podium .podium-total { font-size: 22px; }
+}
+
+/* إحصائيات نهاية المباراة */
+.match-stats { margin: 4px 0 12px; }
+.match-stats h3 { margin: 6px 0; color: #fff; }
+.match-stats-summary { font-size: 14px; margin-bottom: 8px; }
+.match-stats-table { width: 100%; border-collapse: collapse; font-size: 13px; color: #fff; }
+.match-stats-table th,
+.match-stats-table td { padding: 6px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.15); text-align: center; }
+.match-stats-table th { color: var(--gold); font-weight: 800; }

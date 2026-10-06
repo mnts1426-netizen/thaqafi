@@ -1275,3 +1275,21 @@ button.effect-info:hover { border-color: var(--gold); }
 .match-stats-table th,
 .match-stats-table td { padding: 6px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.15); text-align: center; }
 .match-stats-table th { color: var(--gold); font-weight: 800; }
+
+/* إشعار قصير (مثل التراجع) */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--navy);
+  color: #fff;
+  border: 2px solid var(--gold);
+  border-radius: 999px;
+  padding: 10px 22px;
+  font-weight: 800;
+  z-index: 200;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.test-badge { background: #6c5ce7; color: #fff; cursor: default; }

@@ -9,10 +9,15 @@ const firebaseConfig = {
   measurementId: "G-B5GMB6CCFL",
 };
 
+// وضع الاختبار (?test في الرابط): لا اتصال بالسحابة إطلاقاً، حتى لا تصل أي بيانات تجريبية إلى النسخة الاحتياطية الحقيقية
+const TEST_MODE = new URLSearchParams(location.search).has("test");
+
 let firebaseDb = null;
-try {
-  firebase.initializeApp(firebaseConfig);
-  firebaseDb = firebase.firestore();
-} catch (e) {
-  console.error("تعذّر تهيئة Firebase - سيعمل البرنامج محليًا فقط بدون نسخة احتياطية سحابية", e);
+if (!TEST_MODE) {
+  try {
+    firebase.initializeApp(firebaseConfig);
+    firebaseDb = firebase.firestore();
+  } catch (e) {
+    console.error("تعذّر تهيئة Firebase - سيعمل البرنامج محليًا فقط بدون نسخة احتياطية سحابية", e);
+  }
 }

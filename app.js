@@ -3,6 +3,7 @@ let currentView = "intro"; // الصفحة الافتتاحية ثابتة عن�
 let activeStageId = null; // null | 'middle' (الفتيان) | 'elementary' (الأشبال) - يُختار قبل ظهور الرئيسية في كل دخول
 let activeTeamId = null; // الفريق الذي نحن داخل صفحته - كل صفحات الفريق تعرض بياناته فقط
 let pendingMatch = null;
+let matchHistory = []; // لقطات قبل كل خطوة في المباراة الجارية: كل ضغطة Esc تتراجع عن آخر خطوة فقط
 let academySubView = null; // null | 'buildings' | 'employees' | 'players'
 let cardsSubView = null; // null | 'effect' | 'action' | 'discipline'
 let showFullResults = false; // إظهار الإجمالي الكامل (كل الدورات + الأكاديمية) في شاشة النتائج - يُطلَب صريحاً كل زيارة
@@ -319,7 +320,7 @@ function setView(view) {
 // الرجوع خطوة للخلف (Esc أو Backspace): من القسم الفرعي لقائمته، ومن صفحات الفريق لصفحة الفريق، ومنها للرئيسية
 function goBack() {
   if (currentView === "match-live") {
-    notice("لا يمكن الرجوع أثناء المباراة", "أنهِ المباراة أو استخدم زر «إلغاء المباراة» للخروج منها.", "⚽");
+    undoMatchAction();
     return;
   }
   if (currentView === "academy" && academySubView) {
@@ -410,7 +411,7 @@ function render() {
       renderHub(container);
   }
   // يحفظ تقدّم المباراة الجارية (أو يمسح المحفوظ إن انتهت) في كل مرة تُرسم الصفحة - يحمي من فقدان المباراة لو انكسر الجهاز
-  savePendingMatch(activeStageId, pendingMatch);
+  savePendingMatch(activeStageId, pendingMatch, matchHistory);
 }
 
 /* ================= الشاشة الافتتاحية ================= */
@@ -583,7 +584,8 @@ function renderTopbar() {
       <button class="top-btn stage-badge" id="btnSwitchStage" title="تبديل المرحلة">${esc(sc.label)} 🔄</button>
       <button class="top-btn gold" id="btnGeneralResults">🏆 النتائج العامة</button>
       <button class="top-btn ${stage().isFinalMode ? "active" : ""}" id="btnToggleFinal">${stage().isFinalMode ? "🏁 وضع النهائي: مفعّل" : "🏁 تفعيل وضع النهائي"}</button>
-      <span class="kbd-hint" title="اضغط Esc أو Backspace للرجوع خطوة للخلف"><kbd>Esc</kbd> رجوع</span>
+      <span class="kbd-hint" title="اضغط Esc أو Backspace"><kbd>Esc</kbd> ${currentView === "match-live" ? "تراجع عن آخر خطوة" : "رجوع"}</span>
+      ${TEST_MODE ? '<span class="top-btn test-badge" title="لا اتصال بالسحابة في هذا الوضع">🧪 وضع الاختبار</span>' : ""}
     </div>
     <button class="top-btn exit" id="btnExit">🚪 خروج</button>
   `;
@@ -1517,6 +1519,7 @@ function renderResults(container) {
 function resetLeague() {
   const finishedStage = stageConfig(activeStageId);
   pendingMatch = null;
+  matchHistory = [];
   clearPendingMatch();
   activeTeamId = null;
   academySubView = null;
@@ -1545,6 +1548,7 @@ function startMatch() {
 }
 
 function startMatchNow() {
+  matchHistory = [];
   const ids = stage().teams.map((t) => t.id);
   const perTeam = (value) => Object.fromEntries(ids.map((id) => [id, value]));
   pendingMatch = {
@@ -1576,6 +1580,33 @@ function clearQuestionState() {
   pendingMatch.stopCard = null;
   pendingMatch.faceoff = null;
   pendingMatch.active = [];
+}
+
+// يحفظ لقطة كاملة (المباراة + فرق المرحلة) قبل أي خطوة، حتى يمكن التراجع عنها بدقة (بما فيها أرصدة الكرت الأحمر)
+function snapshotMatch(label) {
+  matchHistory.push({ label, data: JSON.stringify({ pm: pendingMatch, teams: stage().teams }) });
+  if (matchHistory.length > 40) matchHistory.shift();
+}
+
+function undoMatchAction() {
+  if (!pendingMatch || !matchHistory.length) {
+    return notice("لا يوجد ما يُتراجع عنه", "لم تُسجَّل أي خطوة في هذه المباراة بعد.", "↩️");
+  }
+  const step = matchHistory.pop();
+  const snap = JSON.parse(step.data);
+  pendingMatch = snap.pm;
+  stage().teams = snap.teams;
+  persist();
+  render();
+  showToast(`↩️ تم التراجع عن: ${step.label}`);
+}
+
+function showToast(text) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2200);
 }
 
 function liveTiers() {
@@ -1684,6 +1715,7 @@ function renderMatchLive(container) {
   card.querySelectorAll("[data-plus]").forEach((btn) => {
     btn.onclick = (e) => {
       const id = btn.dataset.plus;
+      snapshotMatch(`هدف لفريق ${getTeam(id).name}`);
       const add = pendingMatch.armed[id] ? 2 : 1;
       pendingMatch.scores[id] += add;
       clearQuestionState(); // الإجابة تُنهي السؤال، فيزول أثر كل بطاقاته
@@ -1698,19 +1730,24 @@ function renderMatchLive(container) {
   card.querySelectorAll("[data-minus]").forEach((btn) => {
     btn.onclick = () => {
       const id = btn.dataset.minus;
-      pendingMatch.scores[id] = Math.max(0, pendingMatch.scores[id] - 1);
+      if (!pendingMatch.scores[id]) return;
+      snapshotMatch(`إنقاص هدف لفريق ${getTeam(id).name}`);
+      pendingMatch.scores[id] = pendingMatch.scores[id] - 1;
       render();
     };
   });
   card.querySelector("[data-q-minus]").onclick = () => {
+    snapshotMatch("تعديل عدد الأسئلة");
     pendingMatch.questions = Math.max(1, pendingMatch.questions - 1);
     render();
   };
   card.querySelector("[data-q-plus]").onclick = () => {
+    snapshotMatch("تعديل عدد الأسئلة");
     pendingMatch.questions += 1;
     render();
   };
   card.querySelector("#endQuestion").onclick = () => {
+    snapshotMatch("إنهاء السؤال");
     clearQuestionState();
     render();
   };
@@ -1737,6 +1774,7 @@ function renderMatchLive(container) {
       danger: true,
       onConfirm: () => {
         pendingMatch = null;
+        matchHistory = [];
         clearPendingMatch();
         setView("hub");
       },
@@ -1781,19 +1819,49 @@ function buildLiveCardPicker(team) {
   return box;
 }
 
+// كرت أحمر (أو أكثر) لفريق: كل فرق المرحلة الأخرى تحصل على المكافأة عن كل كرت، والفريق المستحِق لا يحصل على شيء
+function applyRedCards(team, count, reason) {
+  const bonus = CONFIG.redCardBonusForOthers * count;
+  const what = count === 2 ? "كرتين أحمرين" : "كرت أحمر";
+  team.redCards += count;
+  pendingMatch.discipline[team.id].red += count;
+  stage().teams.forEach((t) => {
+    if (t.id === team.id) return;
+    t.balance += bonus;
+    t.cardLog.push({ at: nowISO(), text: `🟥 +${bonus} رصيد بسبب ${what} على فريق ${team.name}` });
+  });
+  team.cardLog.push({ at: nowISO(), text: `🟥 ${reason} — حصلت كل الفرق الأخرى على +${bonus} رصيد، وبلا أي نقاط لهذا الفريق` });
+}
+
 function useDisciplineCard(team, type) {
   if (type === "yellow") {
     return confirmModal({
       icon: "🟨",
       title: `تسجيل إنذار شفوي لفريق ${team.name}؟`,
-      message: "إنذار فقط، بلا أي أثر على الرصيد أو النقاط.",
+      message: "إنذار بلا أثر على الرصيد أو النقاط. لكن الإنذار الثاني في نفس المباراة يحوّل الإنذارين إلى كرت أحمر واحد.",
       confirmLabel: "تسجيل الإنذار",
       onConfirm: () => {
+        snapshotMatch(`إنذار لفريق ${team.name}`);
         team.yellowCards++;
-        if (pendingMatch) pendingMatch.discipline[team.id].yellow++;
         team.cardLog.push({ at: nowISO(), text: "🟨 إنذار شفوي" });
+        const d = pendingMatch.discipline[team.id];
+        d.yellow++;
+        const converted = d.yellow >= 2;
+        if (converted) {
+          // إنذاران في نفس المباراة = كرت أحمر واحد
+          d.yellow -= 2;
+          team.yellowCards -= 2;
+          applyRedCards(team, 1, "إنذاران في نفس المباراة = كرت أحمر");
+        }
         persist();
         render();
+        if (converted) {
+          notice(
+            "🟨🟨 = 🟥",
+            `حصل فريق ${team.name} على إنذارين في هذه المباراة، فتحوّلا إلى كرت أحمر: كل فرق المرحلة الأخرى حصلت على +${CONFIG.redCardBonusForOthers} رصيد.`,
+            "🟥"
+          );
+        }
       },
     });
   }
@@ -1804,14 +1872,8 @@ function useDisciplineCard(team, type) {
     confirmLabel: "تسجيل الكرت الأحمر",
     danger: true,
     onConfirm: () => {
-      team.redCards++;
-      if (pendingMatch) pendingMatch.discipline[team.id].red++;
-      stage().teams.forEach((t) => {
-        if (t.id === team.id) return;
-        t.balance += CONFIG.redCardBonusForOthers;
-        t.cardLog.push({ at: nowISO(), text: `🟥 +${CONFIG.redCardBonusForOthers} رصيد بسبب كرت أحمر على فريق ${team.name}` });
-      });
-      team.cardLog.push({ at: nowISO(), text: `🟥 كرت أحمر — حصلت كل الفرق الأخرى على +${CONFIG.redCardBonusForOthers} رصيد، وبلا أي نقاط لهذا الفريق` });
+      snapshotMatch(`كرت أحمر لفريق ${team.name}`);
+      applyRedCards(team, 1, "كرت أحمر");
       persist();
       render();
     },
@@ -1864,6 +1926,7 @@ function useLiveCard(team, card) {
     html: `<div class="card-effect-text">${esc(card.confirmText.replace("{team}", team.name))}</div>`,
     confirmLabel: "✅ تأكيد الاستخدام",
     onConfirm: () => {
+      snapshotMatch(`بطاقة «${card.name}» لفريق ${team.name}`);
       if (card.effect === "shield") pendingMatch.shield[team.id] = true;
       if (card.effect === "arm") pendingMatch.armed[team.id] = card.id;
       if (card.effect === "rescue") {
@@ -1915,6 +1978,7 @@ function useJokerCard(team, card) {
       if (stolen.effect === "arm" && pendingMatch.armed[team.id]) {
         return notice("مضاعفة مفعّلة بالفعل", `لدى فريق ${team.name} مضاعفة مفعّلة في هذا السؤال.`, stolen.icon);
       }
+      snapshotMatch(`الجوكر لفريق ${team.name}`);
       pendingMatch.active = pendingMatch.active.filter((a) => !(a.teamId === fromId && a.cardId === cardId));
       if (stolen.effect === "arm") {
         pendingMatch.armed[fromId] = null;
@@ -1922,7 +1986,7 @@ function useJokerCard(team, card) {
       }
       if (stolen.effect === "stopRival" || stolen.effect === "penalty") pendingMatch.stopRival = team.id;
       if (stolen.effect === "faceoff" && pendingMatch.faceoff) pendingMatch.faceoff.by = team.id;
-      pendingMatch.used[team.id].push(card.id, cardId); // الجوكر نفسه والبطاقة المأخوذة كلاهما يُحسبان على الفريق (كما كان سابقاً)
+      pendingMatch.used[team.id].push(card.id); // يُحسب بطاقة واحدة فقط: الجوكر يحترق، والبطاقة المأخوذة لا تُعدّ بطاقة ثانية
       pendingMatch.active.push({ teamId: team.id, cardId });
       team.cardLog.push({ at: nowISO(), text: `${card.icon} ${card.name} — أخذ «${stolen.name}» من فريق ${from.name} في ${roundLabel(pendingMatch.round)}` });
       from.cardLog.push({ at: nowISO(), text: `${card.icon} فقد بطاقة «${stolen.name}» بسبب جوكر فريق ${team.name} في ${roundLabel(pendingMatch.round)}` });
@@ -1959,6 +2023,7 @@ function finalizeMatch() {
   stage().matchLog.push(entry);
 
   pendingMatch = null;
+  matchHistory = [];
   clearPendingMatch();
   persist();
   showWinnerModal(entry);
@@ -2068,6 +2133,7 @@ function tryResumePendingMatch() {
   activeStageId = saved.stageId;
   activeTeamId = pm.teamIds[0];
   pendingMatch = pm;
+  matchHistory = Array.isArray(saved.history) ? saved.history : [];
   currentView = "match-live";
   return true;
 }

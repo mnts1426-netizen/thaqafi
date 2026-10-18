@@ -414,7 +414,7 @@ function normalizeExplainText(text) {
   return text;
 }
 
-function loadState() {
+function readStoredState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaultState();
@@ -427,36 +427,319 @@ function loadState() {
   }
 }
 
-// يُختم كل حفظ بوقته حتى يمكن لاحقًا تمييز نسخة سحابية أحدث فعلاً (من جهاز آخر) عن نسخة قديمة راكدة
+function loadState() {
+  const s = readStoredState();
+  rememberSaved(s);
+  return s;
+}
+
+/* ================= الحفظ والمزامنة بين الأجهزة ================= */
+// كل دوري (مرحلة) يُختم بوقت آخر تعديل عليه هو وحده، وعند الدمج تؤخذ النسخة الأحدث من كل دوري على حدة:
+// جهازان يعملان على دوريين مختلفين لا يمسح أحدهما عمل الآخر أبداً، وكل نسخة تُستبدل تُحفظ أولاً في lepas_backups.
+
+// نص ثابت الترتيب للمقارنة (Firestore يعيد الحقول بترتيب مختلف)
+function stableStringify(v) {
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  if (v && typeof v === "object") {
+    return "{" + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+  }
+  return JSON.stringify(v);
+}
+
+function stageContent(s) {
+  const { updatedAt, ...rest } = s || {};
+  return stableStringify(rest);
+}
+
+// آخر محتوى محفوظ لكل دوري - لمعرفة أي دوري تغيّر فعلاً عند الحفظ فلا يُختم غيره
+let lastSavedParts = null;
+
+function contentParts(state) {
+  const stages = {};
+  CONFIG.stages.forEach(({ id }) => (stages[id] = stageContent(state.stages[id])));
+  return { stages, explain: state.explainText, auth: stableStringify(state.auth || null) };
+}
+
+function rememberSaved(state) {
+  lastSavedParts = contentParts(state);
+}
+
+// الختم دائماً أحدث من النسخة التي بُني عليها التعديل، حتى لو كانت ساعة هذا الجهاز متأخرة عن جهاز آخر
+function nextStamp(prev) {
+  return Math.max(Date.now(), (Number(prev) || 0) + 1);
+}
+
+function stampChanges(state) {
+  const parts = contentParts(state);
+  if (lastSavedParts) {
+    CONFIG.stages.forEach(({ id }) => {
+      if (parts.stages[id] !== lastSavedParts.stages[id]) state.stages[id].updatedAt = nextStamp(state.stages[id].updatedAt);
+    });
+    if (parts.explain !== lastSavedParts.explain) state.explainUpdatedAt = nextStamp(state.explainUpdatedAt);
+    if (parts.auth !== lastSavedParts.auth) state.authUpdatedAt = nextStamp(state.authUpdatedAt);
+  }
+  lastSavedParts = parts;
+}
+
 function saveState(state) {
+  stampChanges(state);
   state.updatedAt = Date.now();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   pushToCloud(state);
 }
 
-// يرفع نسخة مطابقة للحالة الحالية إلى Firestore كنسخة احتياطية - لا يوقف عمل البرنامج إن فشل (لا إنترنت مثلاً)
+// حفظ محلي لنسخة جاءت من السحابة كما هي (بلا ختم جديد وبلا رفع)
+function saveLocalOnly(state) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  rememberSaved(state);
+}
+
+// وقت دوري لم يُختم بعد (بيانات من قبل هذا التحديث): يُستنتج من أحدث تاريخ داخله (مباريات، سجلات، إنشاء الفرق)
+function inferredStageTime(s) {
+  let max = 0;
+  (function walk(v, key) {
+    if (v && typeof v === "object") {
+      Object.keys(v).forEach((k) => walk(v[k], k));
+      return;
+    }
+    if (typeof v !== "string") return;
+    if (key === "at") {
+      const t = Date.parse(v);
+      if (t > max) max = t;
+    } else if (key === "id") {
+      const m = v.match(/\d{13}/);
+      if (m && +m[0] > max) max = +m[0];
+    }
+  })(s, "");
+  return max;
+}
+
+function stageTime(s) {
+  return Math.max(Number(s && s.updatedAt) || 0, inferredStageTime(s));
+}
+
+// وقت أي جزء محفوظ: دوري (مرحلة)، أو نص الشرح، أو بيانات الدخول
+function partTime(state, id) {
+  if (id === "explain") return Number(state.explainUpdatedAt) || 0;
+  if (id === "auth") return Number(state.authUpdatedAt) || 0;
+  return stageTime(state.stages[id]);
+}
+
+function isValidCloudBackup(cloud) {
+  return !!cloud && typeof cloud === "object" && (!!cloud.stages || Array.isArray(cloud.teams));
+}
+
+// يدمج نسخة هذا الجهاز مع نسخة السحابة: لكل دوري تؤخذ النسخة الأحدث (وعند التساوي التام تُعتمد نسخة السحابة)
+// fromCloud: الدوريات التي سيأخذها هذا الجهاز من السحابة. cloudBehind: السحابة ينقصها تعديل أحدث من هذا الجهاز.
+function mergeStates(local, cloudRaw) {
+  const cloud = migrateState(JSON.parse(JSON.stringify(cloudRaw)));
+  const merged = JSON.parse(JSON.stringify(local));
+  const fromCloud = [];
+  const toCloud = [];
+  const same = [];
+  CONFIG.stages.forEach(({ id }) => {
+    const l = local.stages[id];
+    const c = cloud.stages[id];
+    if (stageContent(l) === stageContent(c)) {
+      same.push(id);
+      return;
+    }
+    if (stageTime(c) >= stageTime(l)) {
+      merged.stages[id] = c;
+      fromCloud.push(id);
+    } else {
+      toCloud.push(id);
+    }
+  });
+  if (local.explainText === cloud.explainText) {
+    same.push("explain");
+  } else {
+    const lt = Number(local.explainUpdatedAt) || 0;
+    const ct = Number(cloud.explainUpdatedAt) || 0;
+    // نصان قديمان بلا وقت: يُعتمد نص السحابة، إلا إن كان هو الافتراضي ونص هذا الجهاز معدَّل
+    const cloudWins = ct > lt || (ct === lt && !(cloud.explainText === CONFIG.explainDefault && local.explainText !== CONFIG.explainDefault));
+    if (cloudWins) {
+      merged.explainText = cloud.explainText;
+      merged.explainUpdatedAt = cloud.explainUpdatedAt;
+      fromCloud.push("explain");
+    } else {
+      toCloud.push("explain");
+    }
+  }
+  // بيانات الدخول (اسم المستخدم وكلمة المرور) - الأحدث تعديلاً يُعتمد على كل الأجهزة
+  if (stableStringify(local.auth || null) === stableStringify(cloud.auth || null)) {
+    same.push("auth");
+  } else {
+    const lt = Number(local.authUpdatedAt) || 0;
+    const ct = Number(cloud.authUpdatedAt) || 0;
+    if (ct > lt || (ct === lt && cloud.auth)) {
+      merged.auth = cloud.auth;
+      merged.authUpdatedAt = cloud.authUpdatedAt;
+      fromCloud.push("auth");
+    } else {
+      toCloud.push("auth");
+    }
+  }
+  return { merged, cloud, fromCloud, toCloud, same };
+}
+
+// لكل دوري: أحدث نسخة سحابية رآها هذا الجهاز (أخذها أو رفعها) - أي نسخة أحدث منها في السحابة هي عمل جهاز آخر لم يُرَ بعد
+const SEEN_KEY = "lepas_seen_v1";
+
+function readSeen() {
+  try {
+    return JSON.parse(localStorage.getItem(SEEN_KEY) || "{}") || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function markSeen(state, ids) {
+  const seen = readSeen();
+  ids.forEach((id) => {
+    seen[id] = partTime(state, id);
+  });
+  localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+}
+
+function backupDoc(data, reason) {
+  return { ...JSON.parse(JSON.stringify(data)), backedUpAt: Date.now(), backupReason: reason };
+}
+
+// الرفع للسحابة بالترتيب، ويُرفع دائماً آخر حالة فقط. الرفع دمجٌ لا استبدال: ما في السحابة من دوري أحدث يبقى كما هو.
+let cloudPushPending = null;
+let cloudPushRunning = false;
+
 function pushToCloud(state) {
   if (!firebaseDb) return;
+  cloudPushPending = JSON.parse(JSON.stringify(state));
+  if (!cloudPushRunning) runCloudPush();
+}
+
+function runCloudPush() {
+  cloudPushRunning = true;
+  const local = cloudPushPending;
+  cloudPushPending = null;
+  const ref = firebaseDb.collection("lepas_state").doc("current");
+  let written = null;
+  let writtenIds = [];
+  firebaseDb
+    .runTransaction((tx) =>
+      tx.get(ref).then((doc) => {
+        written = null;
+        const cloudRaw = doc.exists ? doc.data() : null;
+        if (!isValidCloudBackup(cloudRaw)) {
+          written = { ...local, updatedAt: Date.now() };
+          writtenIds = CONFIG.stages.map((s) => s.id).concat("explain", "auth");
+          tx.set(ref, written);
+          return;
+        }
+        const { merged, cloud, toCloud, same } = mergeStates(local, cloudRaw);
+        writtenIds = same;
+        if (!toCloud.length) return;
+        // تعارض: دوري سيُستبدل في السحابة وفيه عمل من جهاز آخر لم يره هذا الجهاز - تُحفظ نسخة السحابة كاملة أولاً
+        const seen = readSeen();
+        const conflict = toCloud.some((id) => partTime(cloud, id) > (seen[id] || 0));
+        if (conflict) {
+          tx.set(firebaseDb.collection("lepas_backups").doc("cloud_" + Date.now()), backupDoc(cloudRaw, "replaced-in-cloud"));
+        }
+        merged.updatedAt = Date.now();
+        written = merged;
+        writtenIds = toCloud.concat(same);
+        tx.set(ref, merged);
+      })
+    )
+    .then(() => markSeen(written || local, writtenIds))
+    .catch((e) => console.error("تعذّر الحفظ في السحابة - سيُعاد تلقائياً عند عودة الاتصال", e))
+    .finally(() => {
+      cloudPushRunning = false;
+      if (cloudPushPending) runCloudPush();
+    });
+}
+
+// متابعة حية للسحابة: أي حفظ من أي جهاز يصل لكل الأجهزة المفتوحة خلال ثوانٍ.
+// hooks: getState() الحالة الحالية، isBusy() هل يجب تأجيل التحديث الآن (مباراة جارية/نافذة مفتوحة/كتابة)، adopt(merged, ids) اعتماد النسخة المدموجة
+let latestCloud = undefined; // undefined = لم تصل السحابة بعد
+let cloudSyncHooks = null;
+let cloudAdoptDeferred = false;
+
+function startCloudSync(hooks) {
+  if (!firebaseDb) return;
+  cloudSyncHooks = hooks;
   firebaseDb
     .collection("lepas_state")
     .doc("current")
-    .set(JSON.parse(JSON.stringify(state)))
-    .catch((e) => console.error("تعذّر رفع النسخة الاحتياطية إلى Firebase", e));
+    .onSnapshot(
+      (doc) => {
+        latestCloud = doc.exists ? doc.data() : null;
+        syncWithLatestCloud();
+      },
+      (e) => console.error("تعذّرت متابعة السحابة", e)
+    );
+  setInterval(() => {
+    if (cloudAdoptDeferred && !cloudSyncHooks.isBusy()) syncWithLatestCloud();
+  }, 1500);
+  window.addEventListener("online", () => pushToCloud(cloudSyncHooks.getState()));
 }
 
-// يُستدعى مرة واحدة عند بدء التطبيق فقط إن كان الجهاز فارغاً تماماً (لا يوجد حفظ محلي بعد) -
-// يستعيد آخر نسخة محفوظة سحابياً حتى لا تُفقد البيانات لو انكسر الجهاز أو مُسحت بياناته.
-function tryCloudRestore() {
-  if (!firebaseDb) return Promise.resolve(null);
-  return firebaseDb
-    .collection("lepas_state")
-    .doc("current")
-    .get()
-    .then((doc) => (doc.exists ? doc.data() : null))
-    .catch((e) => {
-      console.error("تعذّرت استعادة النسخة الاحتياطية من Firebase", e);
-      return null;
-    });
+function syncWithLatestCloud() {
+  if (latestCloud === undefined || !cloudSyncHooks) return;
+  const local = cloudSyncHooks.getState();
+  if (!isValidCloudBackup(latestCloud)) {
+    pushToCloud(local);
+    return;
+  }
+  const { merged, fromCloud, toCloud, same } = mergeStates(local, latestCloud);
+  cloudAdoptDeferred = false;
+  markSeen(local, same);
+  if (fromCloud.length) {
+    if (cloudSyncHooks.isBusy()) {
+      cloudAdoptDeferred = true;
+    } else {
+      backupLocalBeforeReplace(local, fromCloud);
+      merged.updatedAt = local.updatedAt;
+      saveLocalOnly(merged);
+      markSeen(merged, fromCloud);
+      cloudSyncHooks.adopt(merged, fromCloud);
+    }
+  }
+  if (toCloud.length) pushToCloud(cloudAdoptDeferred ? local : merged);
+}
+
+// قبل أن يأخذ هذا الجهاز دورياً من السحابة: إن كان فيه عمل محلي لم يصل للسحابة قط، يُحفظ في lepas_backups (ونسخة على الجهاز) - لا يضيع شيء
+const LOCAL_BACKUP_KEY = "lepas_local_backup_v1";
+
+function backupLocalBeforeReplace(local, ids) {
+  const seen = readSeen();
+  const unsynced = ids.some((id) => (id !== "explain" || local.explainText !== CONFIG.explainDefault) && partTime(local, id) > (seen[id] || 0));
+  if (!unsynced) return;
+  const data = backupDoc(local, "replaced-on-device");
+  try {
+    localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error("تعذّر حفظ النسخة الاحتياطية على الجهاز", e);
+  }
+  firebaseDb
+    .collection("lepas_backups")
+    .doc("device_" + Date.now())
+    .set(data)
+    .catch((e) => console.error("تعذّر حفظ نسخة احتياطية من بيانات هذا الجهاز", e));
+}
+
+// نسخة احتياطية كاملة قبل أي عملية تمسح شيئاً (حذف مباراة، إنهاء دوري) - في السحابة وعلى الجهاز، فلا يضيع شيء أبداً
+function backupNow(state, reason) {
+  const data = backupDoc(state, reason);
+  try {
+    localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error("تعذّر حفظ النسخة الاحتياطية على الجهاز", e);
+  }
+  if (!firebaseDb) return;
+  firebaseDb
+    .collection("lepas_backups")
+    .doc(reason + "_" + Date.now())
+    .set(data)
+    .catch((e) => console.error("تعذّر حفظ النسخة الاحتياطية في السحابة", e));
 }
 
 /* ================= مراكز المباراة (كل فرق المرحلة معًا) ================= */

@@ -90,8 +90,13 @@ function roundEntries() {
   return stage().matchLog.filter((m) => Array.isArray(m.results));
 }
 
+// عدد الجولات الملعوبة = المباريات المسجلة + أي تعديل يدوي من ⚙️ الإعدادات (roundOffset)
+function playedRoundsCount() {
+  return Math.max(0, roundEntries().length + (stage().roundOffset || 0));
+}
+
 function nextRoundNumber() {
-  return roundEntries().length + 1;
+  return playedRoundsCount() + 1;
 }
 
 function lastRoundEntry() {
@@ -342,6 +347,7 @@ function goBack() {
     cards: "team",
     "team-results": "team",
     results: "hub",
+    settings: "hub",
   };
   const parent = parents[currentView];
   if (!parent) return;
@@ -366,6 +372,7 @@ function addBackButton(container) {
     support: "← صفحة الفريق",
     cards: cardsSubView ? "← أقسام البطاقات" : "← صفحة الفريق",
     "team-results": "← صفحة الفريق",
+    settings: "← الرئيسية",
     results: "← الرئيسية",
   };
   const btn = document.createElement("button");
@@ -377,6 +384,11 @@ function addBackButton(container) {
 
 function render() {
   root.innerHTML = "";
+  if (!pendingMatch && !isLoggedIn()) {
+    loginScreenShown = true;
+    return renderLogin();
+  }
+  loginScreenShown = false;
   if (currentView === "intro") return renderIntro();
   if (currentView === "stage-select") return renderStageSelect();
   if (currentView === "setup") return renderSetup();
@@ -407,11 +419,391 @@ function render() {
     case "match-live":
       renderMatchLive(container);
       break;
+    case "settings":
+      renderSettings(container);
+      break;
     default:
       renderHub(container);
   }
   // يحفظ تقدّم المباراة الجارية (أو يمسح المحفوظ إن انتهت) في كل مرة تُرسم الصفحة - يحمي من فقدان المباراة لو انكسر الجهاز
   savePendingMatch(activeStageId, pendingMatch, matchHistory);
+}
+
+/* ================= الدخول (اسم مستخدم وكلمة مرور) ================= */
+// دخول بسيط: يُطلب على كل جهاز مرة كل 24 ساعة، ولا يقاطع مباراة جارية أبداً. بيانات الدخول تُحفظ مع الدوري فتصل لكل الأجهزة
+const LOGIN_KEY = "lepas_login_v1";
+
+function loginCreds() {
+  const a = state.auth || {};
+  return { user: a.user || CONFIG.defaultLogin.user, pass: a.pass || CONFIG.defaultLogin.pass };
+}
+
+function isLoggedIn() {
+  let at = 0;
+  try {
+    at = Number(localStorage.getItem(LOGIN_KEY)) || 0;
+  } catch (e) {
+    at = 0;
+  }
+  const now = Date.now();
+  return at <= now + 60000 && now - at < CONFIG.loginValidHours * 3600 * 1000;
+}
+
+function toLatinDigits(v) {
+  return String(v)
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+    .replace(/[−–]/g, "-")
+    .trim();
+}
+
+function renderLogin() {
+  const div = document.createElement("div");
+  div.className = "intro-screen";
+  div.innerHTML = `
+    <div class="intro-logo small"><img src="${LOGO}" alt="" /></div>
+    <div class="intro-title">الدوري الثقافي</div>
+    <form class="card login-card" id="loginForm" autocomplete="off">
+      <h3>🔐 تسجيل الدخول</h3>
+      <label for="loginUser">اسم المستخدم</label>
+      <input type="text" id="loginUser" class="prompt-input" inputmode="numeric" autocomplete="off" />
+      <label for="loginPass">كلمة المرور</label>
+      <input type="password" id="loginPass" class="prompt-input" inputmode="numeric" autocomplete="off" />
+      <p class="login-error" id="loginError"></p>
+      <button type="submit" class="btn btn-gold modal-wide-btn">دخول</button>
+    </form>`;
+  root.appendChild(div);
+  const userInput = div.querySelector("#loginUser");
+  userInput.focus();
+  div.querySelector("#loginForm").onsubmit = (e) => {
+    e.preventDefault();
+    const c = loginCreds();
+    const user = toLatinDigits(userInput.value);
+    const pass = toLatinDigits(div.querySelector("#loginPass").value);
+    if (user === c.user && pass === c.pass) {
+      try {
+        localStorage.setItem(LOGIN_KEY, String(Date.now()));
+      } catch (err) {
+        console.error("تعذّر حفظ الدخول على هذا الجهاز", err);
+      }
+      userInput.blur();
+      render();
+      return;
+    }
+    div.querySelector("#loginError").textContent = "اسم المستخدم أو كلمة المرور غير صحيحة";
+    div.querySelector("#loginPass").value = "";
+  };
+}
+
+// إن انتهت مدة الدخول والبرنامج مفتوح، تظهر شاشة الدخول (لا أثناء مباراة ولا فوق نافذة مفتوحة)
+let loginScreenShown = false;
+setInterval(() => {
+  if (!loginScreenShown && !pendingMatch && !openModals.length && !isLoggedIn()) render();
+}, 60000);
+
+/* ================= ⚙️ الإعدادات: الدخول + الجولات + المباريات المنتهية ================= */
+function renderSettings(container) {
+  addBackButton(container);
+  const head = document.createElement("div");
+  head.className = "results-head";
+  head.innerHTML = `<h2>⚙️ الإعدادات</h2><p>دوري ${esc(stageConfig(activeStageId).label)} — كل تعديل يُحفظ ويصل لكل الأجهزة، وتُحفظ نسخة احتياطية قبل أي حذف</p>`;
+  container.appendChild(head);
+
+  // بيانات الدخول
+  const login = document.createElement("div");
+  login.className = "card";
+  login.innerHTML = `<h3>🔐 بيانات الدخول</h3>
+    <div class="item-row"><div>اسم المستخدم: <b>${esc(loginCreds().user)}</b></div><button class="btn btn-gold" id="btnEditLogin">تغيير</button></div>
+    <p class="small-note">يُطلب الدخول على كل جهاز مرة كل ${CONFIG.loginValidHours} ساعة.</p>`;
+  container.appendChild(login);
+  login.querySelector("#btnEditLogin").onclick = openLoginSettings;
+
+  // عدد الجولات
+  const rounds = document.createElement("div");
+  rounds.className = "card";
+  rounds.innerHTML = `<h3>🔢 الجولات</h3>
+    <div class="item-row"><div>عدد الجولات الملعوبة: <b>${playedRoundsCount()}</b> — المباراة القادمة: <b>${esc(roundLabel(nextRoundNumber()))}</b></div><button class="btn btn-gold" id="btnEditRounds">تعديل</button></div>`;
+  container.appendChild(rounds);
+  rounds.querySelector("#btnEditRounds").onclick = editRoundsCount;
+
+  // المباريات المنتهية
+  const list = roundEntries();
+  const matches = document.createElement("div");
+  matches.className = "card";
+  matches.innerHTML = `<h3>📝 المباريات المنتهية</h3>${list.length ? "" : `<p class="small-note">لم تُلعب أي مباراة بعد.</p>`}`;
+  list
+    .slice()
+    .reverse()
+    .forEach((entry) => {
+      const isLast = entry === list[list.length - 1];
+      const row = document.createElement("div");
+      row.className = "item-row match-admin-row";
+      const scores = entry.results.map((r) => `${esc(r.teamName)} <b>${r.score}</b>`).join(" • ");
+      row.innerHTML = `<div><b>${esc(roundLabel(entry.round))}</b> <small>${esc(timeLabel(entry.at))}</small><br>${scores}${
+        entry.edits && entry.edits.length ? ` <small>(✏️ عُدّلت)</small>` : ""
+      }</div>
+        <div class="match-admin-actions">
+          <button class="btn btn-gold" data-edit>✏️ تعديل النتيجة</button>
+          ${isLast ? `<button class="btn btn-danger" data-del>🗑️ حذف المباراة</button>` : ""}
+        </div>`;
+      row.querySelector("[data-edit]").onclick = () => editMatchResult(entry);
+      if (isLast) row.querySelector("[data-del]").onclick = deleteLastMatch;
+      matches.appendChild(row);
+    });
+  if (list.length) {
+    const note = document.createElement("p");
+    note.className = "small-note";
+    note.textContent = "الحذف متاح لآخر مباراة فقط، ويُرجع نقاطها وأهدافها ورصيدها كما كانت قبلها.";
+    matches.appendChild(note);
+  }
+  container.appendChild(matches);
+}
+
+function openLoginSettings() {
+  const c = loginCreds();
+  const m = openModal({
+    boxClass: "game-modal",
+    html: `
+      <div class="modal-icon">🔐</div>
+      <h2>تغيير بيانات الدخول</h2>
+      <p class="modal-message">التغيير يصل لكل الأجهزة. احفظ البيانات الجديدة في مكان آمن.</p>
+      <label class="modal-label">اسم المستخدم</label>
+      <input type="text" id="newUser" class="prompt-input" value="${esc(c.user)}" autocomplete="off" />
+      <label class="modal-label">كلمة المرور الجديدة</label>
+      <input type="text" id="newPass" class="prompt-input" value="${esc(c.pass)}" autocomplete="off" />
+      <div class="modal-actions">
+        <button class="btn btn-outline-light" data-cancel>إلغاء</button>
+        <button class="btn btn-gold" data-save>💾 حفظ</button>
+      </div>`,
+  });
+  m.overlay.querySelector("[data-cancel]").onclick = () => m.close();
+  m.overlay.querySelector("[data-save]").onclick = () => {
+    const user = toLatinDigits(m.overlay.querySelector("#newUser").value);
+    const pass = toLatinDigits(m.overlay.querySelector("#newPass").value);
+    if (!user || !pass) return notice("بيانات ناقصة", "اكتب اسم المستخدم وكلمة المرور.", "⚠️");
+    m.close();
+    if (user === c.user && pass === c.pass) return;
+    state.auth = { user, pass };
+    persist();
+    render();
+    notice("تم الحفظ", `بيانات الدخول الجديدة — اسم المستخدم: ${user} • كلمة المرور: ${pass}`, "🔐");
+  };
+}
+
+function parseWholeNumber(value) {
+  const text = toLatinDigits(value);
+  if (!/^\d+$/.test(text)) return null; // فارغ أو غير رقمي = خطأ (لا يُعتبر صفراً أبداً)
+  const n = Number(text);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+function editRoundsCount() {
+  const played = roundEntries().length;
+  promptModal({
+    icon: "🔢",
+    title: "تعديل عدد الجولات الملعوبة",
+    message: `العدد الحالي: ${playedRoundsCount()}. المباراة القادمة ستحمل الرقم التالي له مباشرة.`,
+    defaultValue: String(playedRoundsCount()),
+    onSubmit: (value) => {
+      const n = parseWholeNumber(value);
+      if (n === null) return notice("رقم غير صحيح", "اكتب عددًا صحيحًا (0 أو أكثر).", "⚠️");
+      stage().roundOffset = n - played;
+      persist();
+      render();
+    },
+  });
+}
+
+function tierCounterKey(tier) {
+  return tier === "win" ? "won" : tier === "loss" ? "lost" : "drawn";
+}
+
+function signed(n) {
+  return n > 0 ? `+${n}` : String(n);
+}
+
+// حذف آخر مباراة: يُرجع كل أثرها على الفرق (النقاط، الأهداف، الرصيد، الكروت، ومكافأة الكرت الأحمر للفرق الأخرى)
+// المباراة لا تُمحى نهائياً: تُنقل إلى سجل المباريات المحذوفة داخل الدوري، وتُحفظ نسخة احتياطية كاملة قبل الحذف
+function deleteLastMatch() {
+  const entry = lastRoundEntry();
+  if (!entry) return;
+  const redBonus = (r) => CONFIG.redCardBonusForOthers * (r.red || 0);
+  const balanceBack = (teamId) => {
+    const own = entry.results.find((r) => r.teamId === teamId);
+    const fromReds = entry.results.filter((r) => r.teamId !== teamId).reduce((n, r) => n + redBonus(r), 0);
+    return (own ? own.bonus || 0 : 0) + fromReds;
+  };
+  const lines = stage()
+    .teams.map((t) => {
+      const r = entry.results.find((x) => x.teamId === t.id);
+      const parts = [];
+      if (r) parts.push(`${signed(-(r.leaguePoints || 0))} نقطة دوري`, `${signed(-r.score)} هدف`);
+      const bal = balanceBack(t.id);
+      if (bal) parts.push(`${signed(-bal)} رصيد`);
+      return parts.length ? `<li><b>${esc(t.name)}</b>: ${parts.join("، ")}</li>` : "";
+    })
+    .join("");
+  confirmModal({
+    icon: "🗑️",
+    title: `حذف مباراة ${roundLabel(entry.round)}؟`,
+    message: "ترجع الفرق كما كانت قبل هذه المباراة. تبقى المباراة محفوظة في النسخة الاحتياطية ولا تضيع.",
+    html: `<ul class="preview-list">${lines}</ul>`,
+    confirmLabel: "حذف المباراة",
+    danger: true,
+    onConfirm: () => {
+      backupNow(state, "before-delete-match");
+      const total = entry.results.reduce((n, r) => n + r.score, 0);
+      entry.results.forEach((r) => {
+        const t = getTeam(r.teamId);
+        if (!t) return;
+        const key = tierCounterKey(r.tier);
+        t.matches.played = Math.max(0, t.matches.played - 1);
+        t.matches[key] = Math.max(0, t.matches[key] - 1);
+        t.matches.goalsFor = Math.max(0, t.matches.goalsFor - r.score);
+        t.matches.goalsAgainst = Math.max(0, t.matches.goalsAgainst - (total - r.score));
+        t.matches.points -= r.leaguePoints || 0;
+        t.yellowCards = Math.max(0, t.yellowCards - (r.yellow || 0));
+        t.redCards = Math.max(0, t.redCards - (r.red || 0));
+      });
+      stage().teams.forEach((t) => {
+        const bal = balanceBack(t.id);
+        t.balance -= bal;
+        if (entry.results.some((r) => r.teamId === t.id) || bal) {
+          t.supportLog.push({ at: nowISO(), text: `🗑️ حُذفت مباراة ${roundLabel(entry.round)} وأُرجع أثرها${bal ? ` (${signed(-bal)} رصيد)` : ""}` });
+        }
+      });
+      const log = stage().matchLog;
+      log.splice(log.lastIndexOf(entry), 1);
+      stage().removedMatches = (stage().removedMatches || []).concat({ ...entry, removedAt: nowISO() });
+      persist();
+      render();
+      notice("تم حذف المباراة", `أُرجعت الفرق كما كانت قبل ${roundLabel(entry.round)}.`, "🗑️");
+    },
+  });
+}
+
+// تعديل نتيجة مباراة منتهية: يُعاد حساب المراكز ونقاط الدوري والرصيد لكل فريق، ويُطبَّق الفرق فقط على الفرق
+function editMatchResult(entry) {
+  const inputs = entry.results
+    .map(
+      (r) => `<div class="score-edit-row"><label>${esc(r.teamName)}</label>
+        <input type="text" inputmode="numeric" class="prompt-input score-edit-input" data-team="${esc(r.teamId)}" value="${r.score}" /></div>`
+    )
+    .join("");
+  const m = openModal({
+    boxClass: "game-modal",
+    html: `
+      <div class="modal-icon">✏️</div>
+      <h2>تعديل نتيجة ${esc(roundLabel(entry.round))}</h2>
+      <p class="modal-message">اكتب عدد أهداف كل فريق. يُعاد حساب المراكز ونقاط الدوري والرصيد تلقائياً.</p>
+      ${inputs}
+      <div class="modal-actions">
+        <button class="btn btn-outline-light" data-cancel>إلغاء</button>
+        <button class="btn btn-gold" data-next>التالي ←</button>
+      </div>`,
+  });
+  m.overlay.querySelector("[data-cancel]").onclick = () => m.close();
+  m.overlay.querySelector("[data-next]").onclick = () => {
+    const newScores = {};
+    let bad = false;
+    m.overlay.querySelectorAll("[data-team]").forEach((inp) => {
+      const n = parseWholeNumber(inp.value);
+      if (n === null) bad = true;
+      newScores[inp.dataset.team] = n;
+    });
+    if (bad) return notice("رقم غير صحيح", "عدد الأهداف يجب أن يكون عدداً صحيحاً (0 أو أكثر).", "⚠️");
+    if (entry.results.every((r) => newScores[r.teamId] === r.score)) return m.close();
+    m.close();
+    confirmMatchEdit(entry, newScores);
+  };
+}
+
+function matchEditPlan(entry, newScores) {
+  const tiers = computeMatchTiers(entry.results.map((r) => ({ teamId: r.teamId, score: newScores[r.teamId] })));
+  const oldTotal = entry.results.reduce((n, r) => n + r.score, 0);
+  const newTotal = tiers.reduce((n, x) => n + x.score, 0);
+  return tiers.map((n) => {
+    const r = entry.results.find((x) => x.teamId === n.teamId);
+    const team = getTeam(n.teamId);
+    const usedRescue = !!r.rescued || (r.cards || []).includes("rescue");
+    const rescued = n.tier === "loss" && usedRescue;
+    const leaguePoints = leaguePointsFor(n.tier, n.score) + (rescued ? 1 : 0);
+    // مكافأة الملكية وقت المباراة: محفوظة في المباريات الجديدة، وتُستنتج للقديمة من رصيدها. إن تغيّرت النتيجة تُحسب بممتلكات الفريق الحالية
+    const oldOwnership =
+      r.ownershipBonus !== undefined ? r.ownershipBonus : (r.bonus || 0) - goalBalanceBonus(r.tier, r.score) - resultBalanceBonus(r.tier);
+    const ownership = n.tier === r.tier || !team ? oldOwnership : ownershipBalanceBonus(team, n.tier);
+    const bonus = goalBalanceBonus(n.tier, n.score) + ownership + resultBalanceBonus(n.tier);
+    return {
+      old: r,
+      next: { ...r, score: n.score, place: n.place, tier: n.tier, tied: n.tied, leaguePoints, rescued, bonus, ownershipBonus: ownership },
+      dPoints: leaguePoints - (r.leaguePoints || 0),
+      dBalance: bonus - (r.bonus || 0),
+      dGoals: n.score - r.score,
+      dAgainst: newTotal - n.score - (oldTotal - r.score),
+    };
+  });
+}
+
+function confirmMatchEdit(entry, newScores) {
+  const plan = matchEditPlan(entry, newScores);
+  const lines = plan
+    .map(
+      (p) => `<li><b>${esc(p.old.teamName)}</b>: الأهداف ${p.old.score} ← ${p.next.score} • ${esc(tierLabel(p.next))} • ${signed(p.dPoints)} نقطة دوري • ${signed(
+        p.dBalance
+      )} رصيد</li>`
+    )
+    .join("");
+  confirmModal({
+    icon: "✏️",
+    title: `اعتماد تعديل ${roundLabel(entry.round)}؟`,
+    html: `<ul class="preview-list">${lines}</ul>`,
+    confirmLabel: "اعتماد التعديل",
+    onConfirm: () => {
+      backupNow(state, "before-edit-match");
+      plan.forEach((p) => {
+        const t = getTeam(p.old.teamId);
+        if (!t) return;
+        if (p.old.tier !== p.next.tier) {
+          const oldKey = tierCounterKey(p.old.tier);
+          t.matches[oldKey] = Math.max(0, t.matches[oldKey] - 1);
+          t.matches[tierCounterKey(p.next.tier)]++;
+        }
+        t.matches.goalsFor = Math.max(0, t.matches.goalsFor + p.dGoals);
+        t.matches.goalsAgainst = Math.max(0, t.matches.goalsAgainst + p.dAgainst);
+        t.matches.points += p.dPoints;
+        t.balance += p.dBalance;
+        t.supportLog.push({
+          at: nowISO(),
+          text: `✏️ تعديل نتيجة ${roundLabel(entry.round)}: الأهداف ${p.old.score} ← ${p.next.score} (${signed(p.dPoints)} نقطة دوري، ${signed(p.dBalance)} رصيد)`,
+        });
+      });
+      entry.edits = (entry.edits || []).concat({ at: nowISO(), before: JSON.parse(JSON.stringify(entry.results)) });
+      entry.results = plan.map((p) => p.next);
+      persist();
+      render();
+      notice("تم التعديل", `عُدّلت نتيجة ${roundLabel(entry.round)} وأُعيد حساب النقاط والرصيد.`, "✅");
+    },
+  });
+}
+
+/* ================= احتفال الهدف ================= */
+// احتفال متحرك قصير مع كل هدف: لا يوقف المباراة ولا يمنع الضغط على أي زر (يمر الضغط من خلاله)
+function showGoalCelebration(team, add) {
+  document.querySelectorAll(".goal-celebration").forEach((el) => el.remove());
+  const el = document.createElement("div");
+  el.className = "goal-celebration";
+  el.style.setProperty("--team-color", teamColor(team));
+  el.innerHTML = `
+    <div class="goal-stage">
+      <div class="goal-net"></div>
+      <div class="goal-ball">⚽</div>
+    </div>
+    <div class="goal-text">قووووول!</div>
+    <div class="goal-team">${esc(team.name)}${add === 2 ? " — هدف مضاعف ×2" : ""}</div>`;
+  document.body.appendChild(el);
+  setTimeout(() => fireConfetti(window.innerWidth / 2, window.innerHeight / 2 - 40, add === 2 ? 60 : 36), 450);
+  setTimeout(() => el.classList.add("out"), 1900);
+  setTimeout(() => el.remove(), 2400);
 }
 
 /* ================= الشاشة الافتتاحية ================= */
@@ -583,6 +975,7 @@ function renderTopbar() {
     <div class="topbar-actions">
       <button class="top-btn stage-badge" id="btnSwitchStage" title="تبديل المرحلة">${esc(sc.label)} 🔄</button>
       <button class="top-btn gold" id="btnGeneralResults">🏆 النتائج العامة</button>
+      <button class="top-btn" id="btnSettings">⚙️ الإعدادات</button>
       <button class="top-btn ${stage().isFinalMode ? "active" : ""}" id="btnToggleFinal">${stage().isFinalMode ? "🏁 وضع النهائي: مفعّل" : "🏁 تفعيل وضع النهائي"}</button>
       <span class="kbd-hint" title="اضغط Esc أو Backspace"><kbd>Esc</kbd> ${currentView === "match-live" ? "تراجع عن آخر خطوة" : "رجوع"}</span>
       ${TEST_MODE ? '<span class="top-btn test-badge" title="لا اتصال بالسحابة في هذا الوضع">🧪 وضع الاختبار</span>' : ""}
@@ -606,6 +999,9 @@ function renderTopbar() {
   };
   bar.querySelector("#btnGeneralResults").onclick = () => {
     if (!blockedDuringMatch()) setView("results");
+  };
+  bar.querySelector("#btnSettings").onclick = () => {
+    if (!blockedDuringMatch()) setView("settings");
   };
   bar.querySelector("#btnToggleFinal").onclick = () => {
     if (stage().isFinalMode) {
@@ -1014,6 +1410,8 @@ const MANUAL_FIELDS = [
   { icon: "⚽", label: "نقاط الدوري", get: (t) => t.matches.points, set: (t, v) => (t.matches.points = v) },
   { icon: "🎯", label: "الأهداف", get: (t) => t.matches.goalsFor, set: (t, v) => (t.matches.goalsFor = v) },
   { icon: "💰", label: "الرصيد", get: (t) => t.balance, set: (t, v) => (t.balance = v) },
+  { icon: "🟨", label: "الإنذارات الصفراء", get: (t) => t.yellowCards, set: (t, v) => (t.yellowCards = v) },
+  { icon: "🟥", label: "الكروت الحمراء", get: (t) => t.redCards, set: (t, v) => (t.redCards = v) },
 ];
 
 function buildManualAdjustCard(team) {
@@ -1518,6 +1916,7 @@ function renderResults(container) {
 // يمسح بيانات المرحلة الحالية فقط (الفتيان أو الأشبال) - المرحلة الأخرى تبقى محفوظة تمامًا كما هي
 function resetLeague() {
   const finishedStage = stageConfig(activeStageId);
+  backupNow(state, "before-end-league"); // نسخة احتياطية كاملة قبل المسح - لا يضيع شيء
   pendingMatch = null;
   matchHistory = [];
   clearPendingMatch();
@@ -1725,6 +2124,7 @@ function renderMatchLive(container) {
       const el = document.getElementById("score" + id);
       if (el) el.classList.add("score-pop");
       fireConfetti(x, y, add === 2 ? 40 : 18);
+      showGoalCelebration(getTeam(id), add);
     };
   });
   card.querySelectorAll("[data-minus]").forEach((btn) => {
@@ -2009,7 +2409,8 @@ function finalizeMatch() {
     r.cards = pendingMatch.used[r.teamId].slice();
     r.yellow = pendingMatch.discipline[r.teamId].yellow;
     r.red = pendingMatch.discipline[r.teamId].red;
-    r.bonus = goalBalanceBonus(r.tier, r.score) + ownershipBalanceBonus(team, r.tier) + resultBalanceBonus(r.tier);
+    r.ownershipBonus = ownershipBalanceBonus(team, r.tier); // يُحفظ حتى يمكن تعديل النتيجة لاحقاً بدقة
+    r.bonus = goalBalanceBonus(r.tier, r.score) + r.ownershipBonus + resultBalanceBonus(r.tier);
     team.matches.played++;
     team.matches.goalsFor += r.score;
     team.matches.goalsAgainst += totalScore - r.score;
@@ -2144,38 +2545,24 @@ if (resumedMatch) {
   notice("تم استرجاع المباراة", "كانت هناك مباراة جارية لم تُنهَ، وتمت استعادتها بنتيجتها وبطاقاتها كما كانت.", "🔄");
 }
 
-function isValidCloudBackup(cloud) {
-  return !!cloud && typeof cloud === "object" && (cloud.stages || Array.isArray(cloud.teams));
+// مزامنة حية مع السحابة: كل الأجهزة ترى نفس البيانات، وكل دوري يؤخذ بأحدث نسخة منه.
+// لا يُستبدل شيء أثناء مباراة جارية أو نافذة مفتوحة أو تسجيل الفرق - يُؤجَّل التحديث حتى تنتهي.
+function cloudUpdateMustWait() {
+  if (pendingMatch || openModals.length || currentView === "setup") return true;
+  const el = document.activeElement;
+  return !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 }
 
-if (!localStorage.getItem(STORAGE_KEY)) {
-  // جهاز فارغ تمامًا (لا يوجد حفظ محلي أصلاً) - استعادة تلقائية وصامتة، آمنة لأنه لا يوجد شيء محلي ليُفقد هنا
-  tryCloudRestore().then((cloud) => {
-    if (isValidCloudBackup(cloud)) {
-      state = migrateState(cloud);
-      saveState(state);
-      render();
+startCloudSync({
+  getState: () => state,
+  isBusy: cloudUpdateMustWait,
+  adopt: (merged) => {
+    state = merged;
+    if (activeStageId && !stage().setupDone && currentView !== "intro" && currentView !== "stage-select") currentView = "hub";
+    if (activeTeamId && !(stage() && stage().teams.some((t) => t.id === activeTeamId))) {
+      activeTeamId = null;
+      if (!["intro", "stage-select", "hub", "results"].includes(currentView)) currentView = "hub";
     }
-  });
-} else {
-  // جهاز لديه بيانات محلية بالفعل - لا تُستبدل تلقائياً أبداً، فقط إن وُجدت نسخة سحابية أحدث فعلاً (حُدّثت من جهاز آخر لاحقًا)
-  // يُسأل المدير أولاً؛ هذا يمنع ظهور بيانات قديمة/محذوفة بصمت عند فتح البرنامج من جهاز أو متصفح آخر
-  tryCloudRestore().then((cloud) => {
-    if (!isValidCloudBackup(cloud)) return;
-    const cloudTime = cloud.updatedAt || 0;
-    const localTime = state.updatedAt || 0;
-    if (cloudTime <= localTime) return;
-    confirmModal({
-      icon: "☁️",
-      title: "توجد نسخة أحدث محفوظة سحابيًا",
-      message: `يبدو أن البيانات على هذا الجهاز ليست الأحدث - توجد نسخة حُدّثت لاحقًا من جهاز آخر (${new Date(cloudTime).toLocaleString("ar")}). هل تريد استخدامها بدلاً من بيانات هذا الجهاز؟`,
-      confirmLabel: "استخدام النسخة الأحدث",
-      cancelLabel: "إبقاء بيانات هذا الجهاز",
-      onConfirm: () => {
-        state = migrateState(cloud);
-        saveState(state);
-        render();
-      },
-    });
-  });
-}
+    render();
+  },
+});

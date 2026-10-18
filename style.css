@@ -1293,3 +1293,92 @@ button.effect-info:hover { border-color: var(--gold); }
 }
 
 .test-badge { background: #6c5ce7; color: #fff; cursor: default; }
+
+/* ===== الدخول ===== */
+.login-card { color: #10222a; max-width: 380px; width: 100%; text-align: right; }
+.login-card h3 { text-align: center; margin-top: 0; }
+.login-card label { display: block; font-weight: 700; margin-top: 6px; }
+.login-card .prompt-input { margin: 6px 0 10px; text-align: center; font-size: 18px; letter-spacing: 2px; }
+.login-error { color: var(--danger); font-weight: 700; min-height: 1.4em; text-align: center; margin: 4px 0; }
+
+/* ===== الإعدادات ===== */
+.modal-label { display: block; font-weight: 700; margin-top: 8px; text-align: right; }
+.preview-list { text-align: right; margin: 10px 0; padding-right: 20px; line-height: 2; }
+.match-admin-row { flex-wrap: wrap; gap: 10px; }
+.match-admin-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.score-edit-row { display: flex; align-items: center; gap: 12px; }
+.score-edit-row label { flex: 1; font-weight: 700; text-align: right; }
+.score-edit-row .score-edit-input { width: 110px; margin: 6px 0; text-align: center; font-size: 18px; }
+
+/* ===== احتفال الهدف (لا يمنع الضغط على أي زر) ===== */
+.goal-celebration {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, rgba(11, 46, 74, 0.72), rgba(11, 46, 74, 0.15) 75%);
+  animation: goalFadeIn 0.2s ease-out;
+}
+.goal-celebration.out { opacity: 0; transition: opacity 0.5s ease; }
+.goal-stage { position: relative; width: 260px; height: 150px; }
+.goal-net {
+  position: absolute;
+  inset: 0;
+  border: 7px solid #fff;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 16px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 16px),
+    rgba(255, 255, 255, 0.06);
+  animation: netShake 0.5s ease-in-out 0.5s;
+}
+.goal-ball {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  font-size: 52px;
+  line-height: 1;
+  transform: translate(-50%, -50%);
+  animation: ballShot 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.goal-text {
+  margin-top: 18px;
+  font-size: clamp(44px, 10vw, 96px);
+  font-weight: 800;
+  color: var(--gold);
+  text-shadow: 0 4px 0 #b06f12, 0 10px 30px rgba(0, 0, 0, 0.45);
+  animation: goalTextPop 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) 0.45s both;
+}
+.goal-team {
+  margin-top: 6px;
+  padding: 6px 22px;
+  border-radius: 999px;
+  background: var(--team-color, var(--teal));
+  color: #fff;
+  font-size: clamp(18px, 3.5vw, 28px);
+  font-weight: 800;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  animation: goalTextPop 0.5s ease-out 0.7s both;
+}
+@keyframes goalFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ballShot {
+  0% { transform: translate(-50%, -50%) translate(-240px, 220px) scale(1.8) rotate(0deg); opacity: 0.4; }
+  100% { transform: translate(-50%, -50%) scale(0.9) rotate(720deg); opacity: 1; }
+}
+@keyframes netShake {
+  0%, 100% { transform: scale(1); }
+  30% { transform: scale(1.06, 0.94); }
+  60% { transform: scale(0.97, 1.03); }
+}
+@keyframes goalTextPop {
+  0% { transform: scale(0.2); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .goal-celebration, .goal-ball, .goal-net, .goal-text, .goal-team { animation: none; }
+}

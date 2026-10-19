@@ -1310,75 +1310,73 @@ button.effect-info:hover { border-color: var(--gold); }
 .score-edit-row label { flex: 1; font-weight: 700; text-align: right; }
 .score-edit-row .score-edit-input { width: 110px; margin: 6px 0; text-align: center; font-size: 18px; }
 
-/* ===== احتفال الهدف (لا يمنع الضغط على أي زر) ===== */
-.goal-celebration {
-  position: fixed;
-  inset: 0;
-  z-index: 900;
-  pointer-events: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: radial-gradient(circle at center, rgba(11, 46, 74, 0.72), rgba(11, 46, 74, 0.15) 75%);
-  animation: goalFadeIn 0.2s ease-out;
+/* ===== احتفال الهدف: 6 ثوانٍ، ولا يمنع الضغط على أي زر (يمر الضغط من خلاله) ===== */
+.gc { position: fixed; inset: 0; z-index: 900; pointer-events: none; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 45%, rgba(11, 46, 74, 0.55), rgba(5, 20, 30, 0.92) 75%);
+  animation: gcIn 0.2s ease-out both, gcOut 0.6s ease-in 5.4s forwards; }
+.gc-flash { position: absolute; inset: 0; background: #fff; opacity: 0; animation: gcFlash 0.3s ease-out forwards; }
+.gc-flash.f2 { animation: gcFlash2 0.4s ease-out 0.62s forwards; }
+.gc-rays { position: absolute; left: 50%; top: 42%; width: 1600px; height: 1600px; margin: -800px 0 0 -800px; border-radius: 50%;
+  background: repeating-conic-gradient(from 0deg, rgba(242, 169, 59, 0.22) 0deg 8deg, transparent 8deg 22deg);
+  -webkit-mask: radial-gradient(circle, #000 18%, transparent 62%); mask: radial-gradient(circle, #000 18%, transparent 62%);
+  animation: gcRaysIn 0.5s ease-out 0.6s both, gcSpin 9s linear 0.6s infinite; }
+.gc-beam { position: absolute; bottom: -10%; width: 220px; height: 140%; transform-origin: 50% 100%;
+  background: linear-gradient(to top, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0) 80%); filter: blur(6px); }
+.gc-beam.b1 { left: 8%; animation: gcBeamL 1.8s ease-in-out infinite alternate; }
+.gc-beam.b2 { right: 8%; animation: gcBeamR 1.8s ease-in-out infinite alternate; }
+.gc-stage { position: relative; width: clamp(170px, 36vh, 300px); aspect-ratio: 300 / 170; animation: gcStageShake 0.5s ease-out 0.62s; }
+.gc-net { position: absolute; inset: 0; border: 8px solid #fff; border-bottom: none; border-radius: 8px 8px 0 0;
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.4) 0 2px, transparent 2px 17px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.4) 0 2px, transparent 2px 17px), rgba(255, 255, 255, 0.07);
+  box-shadow: 0 0 40px rgba(255, 255, 255, 0.25); animation: gcNet 0.6s ease-out 0.62s; }
+.gc-ball { position: absolute; left: 50%; top: 50%; font-size: clamp(36px, 7vh, 60px); line-height: 1; transform: translate(-50%, -50%);
+  filter: drop-shadow(0 0 18px rgba(255, 255, 255, 0.8)); animation: gcBall 0.65s cubic-bezier(0.15, 0.75, 0.3, 1) both; }
+.gc-trail { position: absolute; left: 50%; top: 50%; width: 420px; height: 16px; border-radius: 999px; transform-origin: 0 50%;
+  background: linear-gradient(90deg, rgba(255, 207, 122, 0.95), rgba(255, 207, 122, 0)); filter: blur(3px);
+  transform: translate(0, -50%) rotate(138deg); animation: gcTrail 0.7s ease-out both; }
+.gc-ring { position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%;
+  border: 6px solid var(--gold); opacity: 0; animation: gcRing 0.8s ease-out 0.62s both; }
+.gc-ring.r2 { border-color: #fff; animation-delay: 0.78s; }
+.gc-ring.r3 { border-color: var(--team-color); animation-delay: 0.94s; }
+.gc-word { position: relative; margin-top: 10px; font-size: clamp(52px, min(11vw, 17vh), 132px); line-height: 1.25; font-weight: 800;
+  color: var(--gold); white-space: nowrap;
+  text-shadow: 0 5px 0 #b06f12, 0 0 40px rgba(242, 169, 59, 0.75), 0 14px 34px rgba(0, 0, 0, 0.5);
+  animation: gcSlam 0.55s cubic-bezier(0.2, 1.7, 0.4, 1) 0.62s both, gcPulse 0.7s ease-in-out 1.6s infinite alternate; }
+.gc-team { position: relative; margin-top: 6px; padding: 8px 34px; border-radius: 14px; transform: skewX(-8deg);
+  background: linear-gradient(90deg, var(--team-color), color-mix(in srgb, var(--team-color) 70%, #fff)); color: #fff;
+  font-size: clamp(22px, 4vw, 36px); font-weight: 800; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 0 4px rgba(255, 255, 255, 0.85);
+  animation: gcBanner 0.55s cubic-bezier(0.2, 1.4, 0.4, 1) 1.15s both; }
+.gc-team span { display: inline-block; transform: skewX(8deg); }
+.gc-double { position: relative; margin-top: 12px; padding: 4px 18px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-weight: 800; font-size: 22px; animation: gcSlam 0.45s cubic-bezier(0.2, 1.7, 0.4, 1) 1.5s both; }
+.gc-piece { position: absolute; width: 10px; height: 16px; border-radius: 2px; opacity: 0; animation: gcPiece ease-out both; }
+.gc-spark { position: absolute; width: 7px; height: 7px; border-radius: 50%; opacity: 0; background: currentColor; box-shadow: 0 0 10px currentColor;
+  animation: gcSpark 1s ease-out both; }
+.gc-shake { animation: gcShake 0.5s ease-out 0.62s; }
+
+@keyframes gcIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes gcOut { to { opacity: 0; } }
+@keyframes gcFlash { 0% { opacity: 0.45; } 100% { opacity: 0; } }
+@keyframes gcFlash2 { 0% { opacity: 0.7; } 100% { opacity: 0; } }
+@keyframes gcRaysIn { from { opacity: 0; transform: scale(0.3); } to { opacity: 1; transform: scale(1); } }
+@keyframes gcSpin { to { rotate: 360deg; } }
+@keyframes gcBeamL { from { transform: rotate(-28deg); } to { transform: rotate(18deg); } }
+@keyframes gcBeamR { from { transform: rotate(28deg); } to { transform: rotate(-18deg); } }
+@keyframes gcBall {
+  0% { transform: translate(-50%, -50%) translate(-330px, 300px) scale(2.4) rotate(0deg); opacity: 0.3; }
+  100% { transform: translate(-50%, -50%) scale(0.95) rotate(900deg); opacity: 1; }
 }
-.goal-celebration.out { opacity: 0; transition: opacity 0.5s ease; }
-.goal-stage { position: relative; width: 260px; height: 150px; }
-.goal-net {
-  position: absolute;
-  inset: 0;
-  border: 7px solid #fff;
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  background:
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 16px),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 16px),
-    rgba(255, 255, 255, 0.06);
-  animation: netShake 0.5s ease-in-out 0.5s;
-}
-.goal-ball {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  font-size: 52px;
-  line-height: 1;
-  transform: translate(-50%, -50%);
-  animation: ballShot 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) both;
-}
-.goal-text {
-  margin-top: 18px;
-  font-size: clamp(44px, 10vw, 96px);
-  font-weight: 800;
-  color: var(--gold);
-  text-shadow: 0 4px 0 #b06f12, 0 10px 30px rgba(0, 0, 0, 0.45);
-  animation: goalTextPop 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) 0.45s both;
-}
-.goal-team {
-  margin-top: 6px;
-  padding: 6px 22px;
-  border-radius: 999px;
-  background: var(--team-color, var(--teal));
-  color: #fff;
-  font-size: clamp(18px, 3.5vw, 28px);
-  font-weight: 800;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  animation: goalTextPop 0.5s ease-out 0.7s both;
-}
-@keyframes goalFadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes ballShot {
-  0% { transform: translate(-50%, -50%) translate(-240px, 220px) scale(1.8) rotate(0deg); opacity: 0.4; }
-  100% { transform: translate(-50%, -50%) scale(0.9) rotate(720deg); opacity: 1; }
-}
-@keyframes netShake {
-  0%, 100% { transform: scale(1); }
-  30% { transform: scale(1.06, 0.94); }
-  60% { transform: scale(0.97, 1.03); }
-}
-@keyframes goalTextPop {
-  0% { transform: scale(0.2); opacity: 0; }
-  100% { transform: scale(1); opacity: 1; }
-}
+@keyframes gcTrail { 0% { opacity: 0; width: 0; } 60% { opacity: 1; width: 420px; } 100% { opacity: 0; width: 120px; } }
+@keyframes gcNet { 0%, 100% { transform: scale(1); } 25% { transform: scale(1.1, 0.88); } 55% { transform: scale(0.95, 1.06); } 80% { transform: scale(1.02, 0.98); } }
+@keyframes gcStageShake { 0%, 100% { translate: 0 0; } 20% { translate: -8px 4px; } 40% { translate: 7px -5px; } 60% { translate: -5px 3px; } 80% { translate: 3px -2px; } }
+@keyframes gcShake { 0%, 100% { translate: 0 0; } 15% { translate: -14px 8px; } 30% { translate: 12px -9px; } 45% { translate: -9px 6px; } 60% { translate: 7px -4px; } 80% { translate: -3px 2px; } }
+@keyframes gcRing { 0% { opacity: 1; transform: scale(0.2); } 100% { opacity: 0; transform: scale(5); } }
+@keyframes gcSlam { 0% { opacity: 0; transform: scale(3.2) rotate(-6deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+@keyframes gcPulse { from { transform: scale(1); filter: brightness(1); } to { transform: scale(1.07); filter: brightness(1.2); } }
+@keyframes gcBanner { 0% { opacity: 0; transform: translateX(-120vw) skewX(-8deg); } 100% { opacity: 1; transform: translateX(0) skewX(-8deg); } }
+@keyframes gcPiece { 0% { opacity: 1; transform: translate(0, 0) rotate(0); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); } }
+@keyframes gcSpark { 0% { opacity: 1; transform: translate(0, 0) scale(1); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.4); } }
 @media (prefers-reduced-motion: reduce) {
-  .goal-celebration, .goal-ball, .goal-net, .goal-text, .goal-team { animation: none; }
+  .gc *, .gc-shake { animation-duration: 0.01s !important; animation-iteration-count: 1 !important; }
 }

@@ -787,23 +787,85 @@ function confirmMatchEdit(entry, newScores) {
 }
 
 /* ================= احتفال الهدف ================= */
-// احتفال متحرك قصير مع كل هدف: لا يوقف المباراة ولا يمنع الضغط على أي زر (يمر الضغط من خلاله)
+// احتفال حماسي مع كل هدف لمدة 6 ثوانٍ: لا يوقف المباراة ولا يمنع الضغط على أي زر (يمر الضغط من خلاله).
+// هدف جديد أثناء الاحتفال يبدأ احتفالاً جديداً مكانه.
+const GOAL_CELEBRATION_MS = 6000;
+const GOAL_WORD_START = 620; // كلمة "قول" تتمدد تدريجياً: قول ← قووووووووول!
+const GOAL_WORD_STEP = 85;
+const GOAL_WORD_MAX = 9;
+let goalCelebrationTimer = null;
+
+function goalWordAt(ms) {
+  const waws = Math.max(1, Math.min(GOAL_WORD_MAX, 1 + Math.floor((ms - GOAL_WORD_START) / GOAL_WORD_STEP)));
+  return "ق" + "و".repeat(waws) + "ل" + (waws >= GOAL_WORD_MAX ? "!" : "");
+}
+
 function showGoalCelebration(team, add) {
-  document.querySelectorAll(".goal-celebration").forEach((el) => el.remove());
+  if (!team) return;
+  document.querySelectorAll(".gc").forEach((el) => el.remove());
+  clearTimeout(goalCelebrationTimer);
   const el = document.createElement("div");
-  el.className = "goal-celebration";
+  el.className = "gc";
   el.style.setProperty("--team-color", teamColor(team));
   el.innerHTML = `
-    <div class="goal-stage">
-      <div class="goal-net"></div>
-      <div class="goal-ball">⚽</div>
+    <div class="gc-beam b1"></div><div class="gc-beam b2"></div>
+    <div class="gc-rays"></div>
+    <div class="gc-stage">
+      <div class="gc-net"></div>
+      <div class="gc-ring"></div><div class="gc-ring r2"></div><div class="gc-ring r3"></div>
+      <div class="gc-trail"></div>
+      <div class="gc-ball">⚽</div>
     </div>
-    <div class="goal-text">قووووول!</div>
-    <div class="goal-team">${esc(team.name)}${add === 2 ? " — هدف مضاعف ×2" : ""}</div>`;
+    <div class="gc-word">${goalWordAt(0)}</div>
+    <div class="gc-team"><span>هدف لـ ${esc(team.name)}</span></div>
+    ${add === 2 ? '<div class="gc-double">🔥 هدف مضاعف ×2</div>' : ""}
+    <div class="gc-flash"></div><div class="gc-flash f2"></div>`;
+  const colors = ["#f2a93b", "#12a89b", "#ffcf7a", "#e5484d", "#ffffff", teamColor(team)];
+  // قصاصات ملونة على دفعات: من المرمى، ثم من الجانبين، ثم من الأعلى
+  [[50, 40, 620, 70], [18, 60, 1500, 40], [82, 60, 1500, 40], [50, 30, 2400, 50], [25, 45, 3400, 35], [75, 45, 3400, 35], [50, 35, 4300, 45]].forEach(
+    ([x, y, delay, n]) => {
+      for (let i = 0; i < n; i++) {
+        const p = document.createElement("div");
+        p.className = "gc-piece";
+        const a = Math.random() * Math.PI * 2;
+        const d = 160 + Math.random() * 380;
+        p.style.cssText = `left:${x}%;top:${y}%;background:${colors[i % colors.length]};--dx:${Math.cos(a) * d}px;--dy:${Math.sin(a) * d + 160}px;--rot:${
+          360 + Math.random() * 720
+        }deg;animation-duration:${1.1 + Math.random() * 0.9}s;animation-delay:${delay + Math.random() * 120}ms`;
+        el.appendChild(p);
+      }
+    }
+  );
+  // ألعاب نارية صغيرة في الأعلى طوال الاحتفال
+  [[25, 22, 1200], [75, 18, 1650], [40, 14, 2100], [62, 26, 2600], [15, 30, 3000], [85, 30, 3150], [35, 20, 3700], [68, 16, 4100], [50, 24, 4600]].forEach(
+    ([x, y, delay], k) => {
+      for (let i = 0; i < 22; i++) {
+        const sp = document.createElement("div");
+        sp.className = "gc-spark";
+        const a = (i / 22) * Math.PI * 2;
+        const d = 70 + Math.random() * 50;
+        sp.style.cssText = `left:${x}%;top:${y}%;color:${colors[(i + k) % colors.length]};--dx:${Math.cos(a) * d}px;--dy:${Math.sin(a) * d + 25}px;animation-delay:${delay}ms`;
+        el.appendChild(sp);
+      }
+    }
+  );
   document.body.appendChild(el);
-  setTimeout(() => fireConfetti(window.innerWidth / 2, window.innerHeight / 2 - 40, add === 2 ? 60 : 36), 450);
-  setTimeout(() => el.classList.add("out"), 1900);
-  setTimeout(() => el.remove(), 2400);
+  // اهتزاز خفيف للشاشة لحظة دخول الكرة
+  root.classList.remove("gc-shake");
+  void root.offsetWidth;
+  root.classList.add("gc-shake");
+
+  const word = el.querySelector(".gc-word");
+  const t0 = Date.now();
+  const stretch = setInterval(() => {
+    const ms = Date.now() - t0;
+    if (el.isConnected) word.textContent = goalWordAt(ms);
+    if (!el.isConnected || ms >= GOAL_WORD_START + GOAL_WORD_STEP * GOAL_WORD_MAX) clearInterval(stretch);
+  }, 40);
+  goalCelebrationTimer = setTimeout(() => {
+    el.remove();
+    root.classList.remove("gc-shake");
+  }, GOAL_CELEBRATION_MS + 100);
 }
 
 /* ================= الشاشة الافتتاحية ================= */

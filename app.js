@@ -1,3 +1,6 @@
+// الحساب المفتوح على هذا الجهاز (صاحب البرنامج / حساب مستخدم / تجريبي) - يُحدَّد قبل تحميل أي بيانات
+const SESSION = readSession();
+if (SESSION) setScope(SESSION.kind, SESSION.id);
 let state = loadState();
 let currentView = "intro"; // الصفحة الافتتاحية ثابتة عند كل فتح للموقع
 let activeStageId = null; // null | 'middle' (الفتيان) | 'elementary' (الأشبال) - يُختار قبل ظهور الرئيسية في كل دخول
@@ -21,7 +24,7 @@ function stage() {
 }
 
 function stageConfig(id) {
-  return CONFIG.stages.find((s) => s.id === id);
+  return scopeStages().find((s) => s.id === id);
 }
 
 function persist() {
@@ -348,8 +351,10 @@ function goBack() {
     "team-results": "team",
     results: "hub",
     settings: "hub",
+    accounts: "hub",
   };
-  const parent = parents[currentView];
+  let parent = parents[currentView];
+  if (parent === "stage-select" && isSingleLeague()) parent = "intro";
   if (!parent) return;
   if (parent === "team" && !activeTeam()) return setView("hub");
   setView(parent);
@@ -373,6 +378,7 @@ function addBackButton(container) {
     cards: cardsSubView ? "← أقسام البطاقات" : "← صفحة الفريق",
     "team-results": "← صفحة الفريق",
     settings: "← الرئيسية",
+    accounts: "← الرئيسية",
     results: "← الرئيسية",
   };
   const btn = document.createElement("button");
@@ -384,11 +390,17 @@ function addBackButton(container) {
 
 function render() {
   root.innerHTML = "";
-  if (!pendingMatch && !isLoggedIn()) {
+  if (!SESSION || (!pendingMatch && !isLoggedIn())) {
     loginScreenShown = true;
     return renderLogin();
   }
   loginScreenShown = false;
+  // حساب بدوري واحد: لا توجد شاشة اختيار مرحلة، يُفتح الدوري مباشرة
+  if (currentView === "stage-select" && isSingleLeague()) {
+    activeStageId = scopeStages()[0].id;
+    currentView = stage().setupDone ? "hub" : "setup";
+  }
+  if (currentView === "accounts" && SCOPE.kind !== "owner") currentView = "hub";
   if (currentView === "intro") return renderIntro();
   if (currentView === "stage-select") return renderStageSelect();
   if (currentView === "setup") return renderSetup();
@@ -422,6 +434,9 @@ function render() {
     case "settings":
       renderSettings(container);
       break;
+    case "accounts":
+      renderAccountsAdmin(container);
+      break;
     default:
       renderHub(container);
   }
@@ -429,9 +444,11 @@ function render() {
   savePendingMatch(activeStageId, pendingMatch, matchHistory);
 }
 
-/* ================= الدخول (اسم مستخدم وكلمة مرور) ================= */
-// دخول بسيط: يُطلب على كل جهاز مرة كل 24 ساعة، ولا يقاطع مباراة جارية أبداً. بيانات الدخول تُحفظ مع الدوري فتصل لكل الأجهزة
-const LOGIN_KEY = "lepas_login_v1";
+/* ================= الدخول: تسجيل دخول / إنشاء حساب / حساب تجريبي ================= */
+// الدخول يُطلب على كل جهاز مرة كل 24 ساعة، ولا يقاطع مباراة جارية أبداً.
+// حساب صاحب البرنامج يُعرف ببيانات دخوله (تُحفظ مع دورياته وتصل لكل الأجهزة)، وبقية الحسابات من قائمة الحسابات في السحابة.
+const LOGIN_MSG_KEY = "lepas_login_msg";
+let loginTab = "login"; // login | signup | trial
 
 function loginCreds() {
   const a = state.auth || {};
@@ -439,14 +456,7 @@ function loginCreds() {
 }
 
 function isLoggedIn() {
-  let at = 0;
-  try {
-    at = Number(localStorage.getItem(LOGIN_KEY)) || 0;
-  } catch (e) {
-    at = 0;
-  }
-  const now = Date.now();
-  return at <= now + 60000 && now - at < CONFIG.loginValidHours * 3600 * 1000;
+  return !!SESSION && sessionStillValid(SESSION);
 }
 
 function toLatinDigits(v) {
@@ -457,42 +467,159 @@ function toLatinDigits(v) {
     .trim();
 }
 
+function ownerPhoneLabel() {
+  const p = CONFIG.ownerPhone;
+  return `+${p.slice(0, 3)} ${p.slice(3, 5)} ${p.slice(5, 8)} ${p.slice(8)}`;
+}
+
+function whatsappLinkHtml(label) {
+  return `<a class="whatsapp-link" href="https://wa.me/${CONFIG.ownerPhone}" target="_blank" rel="noopener">💬 ${esc(label || "تواصل عبر الواتساب")} <span dir="ltr">${esc(
+    ownerPhoneLabel()
+  )}</span></a>`;
+}
+
+// يبدأ جلسة جديدة على هذا الجهاز ثم يعيد تحميل الصفحة، فيُفتح الحساب المختار ببياناته هو فقط
+function startSession(s) {
+  writeSession({ ...s, at: Date.now() });
+  location.reload();
+}
+
+function logout(message) {
+  clearSession();
+  if (message) sessionStorage.setItem(LOGIN_MSG_KEY, message);
+  location.reload();
+}
+
 function renderLogin() {
   const div = document.createElement("div");
-  div.className = "intro-screen";
+  div.className = "intro-screen login-screen";
+  const msg = sessionStorage.getItem(LOGIN_MSG_KEY);
+  sessionStorage.removeItem(LOGIN_MSG_KEY);
+  const tabs = [
+    ["login", "🔐 تسجيل الدخول"],
+    ["signup", "✨ إنشاء حساب"],
+    ["trial", "🧪 حساب تجريبي"],
+  ];
+  const accountsNotice = `<ul class="login-notes">
+      <li>الحساب دوري واحد خاص بك، تختار عدد فرقه وأسماءها ثم تستخدم كل شيء.</li>
+      <li>مدة الحساب <b>سنة كاملة (${CONFIG.accountDays} يومًا)</b> من يوم إنشائه، ويظهر تنبيه في آخر ${CONFIG.accountWarnDays} يومًا، ثم <b>يُحذف الحساب وكل بياناته نهائيًا</b> ما لم يُمدَّد.</li>
+      <li>صاحب البرنامج لديه صفحة خاصة يرى فيها كل الحسابات وبياناتها، ويستطيع تمديدها أو حذفها.</li>
+    </ul>`;
+  const forms = {
+    login: `
+      <form class="login-form" id="loginForm" autocomplete="off">
+        <label for="loginUser">اسم المستخدم</label>
+        <input type="text" id="loginUser" class="prompt-input" autocomplete="off" />
+        <label for="loginPass">كلمة المرور</label>
+        <input type="password" id="loginPass" class="prompt-input" autocomplete="off" />
+        <p class="login-error" id="loginError">${msg ? esc(msg) : ""}</p>
+        <button type="submit" class="btn btn-gold modal-wide-btn">دخول</button>
+      </form>`,
+    signup: `
+      <form class="login-form" id="signupForm" autocomplete="off">
+        <label for="suUser">اسم المستخدم</label>
+        <input type="text" id="suUser" class="prompt-input" autocomplete="off" placeholder="من 3 إلى 20 حرفًا أو رقمًا" />
+        <label for="suPass">كلمة المرور</label>
+        <input type="text" id="suPass" class="prompt-input" autocomplete="off" placeholder="4 خانات على الأقل" />
+        ${accountsNotice}
+        <p class="login-error" id="loginError"></p>
+        <button type="submit" class="btn btn-gold modal-wide-btn">إنشاء الحساب والدخول</button>
+      </form>`,
+    trial: `
+      <div class="login-form">
+        <ul class="login-notes">
+          <li>جرّب البرنامج كاملًا بلا تسجيل: دوري واحد تختار عدد فرقه.</li>
+          <li>بيانات الحساب التجريبي <b>على هذا الجهاز فقط</b>، ولا تُحفظ في السحابة.</li>
+          <li>إذا أعجبك البرنامج أنشئ حسابًا لتُحفظ بياناتك على كل أجهزتك.</li>
+        </ul>
+        <button class="btn btn-gold modal-wide-btn" id="btnTrial">🧪 ابدأ التجربة</button>
+      </div>`,
+  };
   div.innerHTML = `
     <div class="intro-logo small"><img src="${LOGO}" alt="" /></div>
     <div class="intro-title">الدوري الثقافي</div>
-    <form class="card login-card" id="loginForm" autocomplete="off">
-      <h3>🔐 تسجيل الدخول</h3>
-      <label for="loginUser">اسم المستخدم</label>
-      <input type="text" id="loginUser" class="prompt-input" inputmode="numeric" autocomplete="off" />
-      <label for="loginPass">كلمة المرور</label>
-      <input type="password" id="loginPass" class="prompt-input" inputmode="numeric" autocomplete="off" />
-      <p class="login-error" id="loginError"></p>
-      <button type="submit" class="btn btn-gold modal-wide-btn">دخول</button>
-    </form>`;
+    <div class="card login-card">
+      <div class="login-tabs">${tabs
+        .map(([id, label]) => `<button type="button" class="login-tab ${loginTab === id ? "active" : ""}" data-tab="${id}">${label}</button>`)
+        .join("")}</div>
+      ${forms[loginTab]}
+      <div class="login-contact">للاستفسار أو الاقتراح أو تمديد الحساب: ${whatsappLinkHtml("واتساب")}</div>
+    </div>
+    ${TEST_MODE ? '<span class="top-btn test-badge">🧪 وضع الاختبار</span>' : ""}`;
   root.appendChild(div);
-  const userInput = div.querySelector("#loginUser");
-  userInput.focus();
-  div.querySelector("#loginForm").onsubmit = (e) => {
-    e.preventDefault();
-    const c = loginCreds();
-    const user = toLatinDigits(userInput.value);
-    const pass = toLatinDigits(div.querySelector("#loginPass").value);
-    if (user === c.user && pass === c.pass) {
-      try {
-        localStorage.setItem(LOGIN_KEY, String(Date.now()));
-      } catch (err) {
-        console.error("تعذّر حفظ الدخول على هذا الجهاز", err);
-      }
-      userInput.blur();
+
+  div.querySelectorAll("[data-tab]").forEach((b) => {
+    b.onclick = () => {
+      loginTab = b.dataset.tab;
       render();
-      return;
-    }
-    div.querySelector("#loginError").textContent = "اسم المستخدم أو كلمة المرور غير صحيحة";
-    div.querySelector("#loginPass").value = "";
+    };
+  });
+  const showError = (text) => {
+    const el = div.querySelector("#loginError");
+    if (el) el.textContent = text;
   };
+  const busy = (form, on) => form.querySelectorAll("button, input").forEach((el) => (el.disabled = on));
+
+  if (loginTab === "login") {
+    const form = div.querySelector("#loginForm");
+    div.querySelector("#loginUser").focus();
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const user = toLatinDigits(div.querySelector("#loginUser").value);
+      const pass = toLatinDigits(div.querySelector("#loginPass").value);
+      if (!user || !pass) return showError("اكتب اسم المستخدم وكلمة المرور.");
+      busy(form, true);
+      showError("");
+      attemptLogin(user, pass)
+        .catch(() => "تعذّر الاتصال. تأكد من الإنترنت ثم حاول مرة أخرى.")
+        .then((err) => {
+          if (!err) return;
+          busy(form, false);
+          showError(err);
+          div.querySelector("#loginPass").value = "";
+        });
+    };
+  } else if (loginTab === "signup") {
+    const form = div.querySelector("#signupForm");
+    div.querySelector("#suUser").focus();
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const user = normalizeUsername(div.querySelector("#suUser").value);
+      const pass = toLatinDigits(div.querySelector("#suPass").value);
+      if (!validUsername(user)) return showError("اسم المستخدم من 3 إلى 20 حرفًا أو رقمًا، بلا مسافات.");
+      if (pass.length < 4) return showError("كلمة المرور 4 خانات على الأقل.");
+      if (!firebaseDb) return showError("إنشاء الحساب يحتاج اتصالًا بالإنترنت.");
+      busy(form, true);
+      showError("");
+      ownerCreds()
+        .then((owner) => createAccount(user, pass, [accountIdFor(owner.user), accountIdFor(CONFIG.defaultLogin.user)]))
+        .then(({ id, meta }) => startSession({ kind: "account", id, username: meta.username, expiresAt: meta.expiresAt }))
+        .catch((err) => {
+          busy(form, false);
+          showError(err && err.message === "taken" ? "اسم المستخدم مستخدم من قبل، اختر اسمًا آخر." : "تعذّر إنشاء الحساب. تأكد من الإنترنت ثم حاول مرة أخرى.");
+        });
+    };
+  } else {
+    div.querySelector("#btnTrial").onclick = () => startSession({ kind: "trial" });
+  }
+}
+
+// يعيد رسالة الخطأ، أو لا شيء إن نجح الدخول (وتُعاد الصفحة)
+function attemptLogin(user, pass) {
+  return ownerCreds().then((owner) => {
+    if (user === owner.user && pass === owner.pass) return startSession({ kind: "owner" });
+    if (!firebaseDb) return "اسم المستخدم أو كلمة المرور غير صحيحة";
+    if (!validUsername(user)) return "اسم المستخدم أو كلمة المرور غير صحيحة";
+    const id = accountIdFor(user);
+    return fetchAccount(id).then((meta) => {
+      if (!meta || meta.pass !== pass) return "اسم المستخدم أو كلمة المرور غير صحيحة";
+      if (accountExpired(meta)) {
+        wipeAccountOnThisDevice(id);
+        return deleteAccountFully(id).then(() => `انتهت مدة هذا الحساب (${CONFIG.accountDays} يومًا) وحُذف نهائيًا. للاستفسار تواصل مع صاحب البرنامج.`);
+      }
+      return startSession({ kind: "account", id, username: meta.username, expiresAt: meta.expiresAt });
+    });
+  });
 }
 
 // إن انتهت مدة الدخول والبرنامج مفتوح، تظهر شاشة الدخول (لا أثناء مباراة ولا فوق نافذة مفتوحة)
@@ -501,22 +628,160 @@ setInterval(() => {
   if (!loginScreenShown && !pendingMatch && !openModals.length && !isLoggedIn()) render();
 }, 60000);
 
+// تنبيه انتهاء مدة الحساب (آخر 90 يومًا) - للحسابات الجديدة فقط
+function accountWarnDays() {
+  if (!SESSION || SESSION.kind !== "account") return null;
+  const left = accountDaysLeft(SESSION.expiresAt);
+  return left <= CONFIG.accountWarnDays ? left : null;
+}
+
+function showAccountExpiryNotice() {
+  const left = accountDaysLeft(SESSION.expiresAt);
+  const m = openModal({
+    boxClass: "game-modal",
+    html: `
+      <div class="modal-icon">⏳</div>
+      <h2>باقي ${left} يومًا على انتهاء الحساب</h2>
+      <p class="modal-message">ينتهي حسابك يوم ${esc(new Date(SESSION.expiresAt).toLocaleDateString("ar"))}، وبعدها يُحذف الحساب وكل بياناته نهائيًا. لتمديده تواصل مع صاحب البرنامج.</p>
+      ${whatsappLinkHtml()}
+      <button class="btn btn-gold modal-wide-btn" data-ok>حسنًا</button>`,
+  });
+  m.overlay.querySelector("[data-ok]").onclick = () => m.close();
+}
+
+/* ================= 👑 صفحة صاحب البرنامج: كل الحسابات ================= */
+let accountsCache = null; // null = لم تُحمَّل بعد
+
+function loadAccountsForAdmin() {
+  accountsCache = null;
+  render();
+  sweepExpiredAccounts(true)
+    .then(() => listAccounts())
+    .then((list) => {
+      accountsCache = list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    })
+    .catch((e) => {
+      console.error("تعذّر تحميل الحسابات", e);
+      accountsCache = "error";
+    })
+    .then(() => {
+      if (currentView === "accounts") render();
+    });
+}
+
+function renderAccountsAdmin(container) {
+  addBackButton(container);
+  const head = document.createElement("div");
+  head.className = "results-head";
+  head.innerHTML = `<h2>👑 الحسابات</h2><p>كل الحسابات التي أنشأها المستخدمون. الحساب يُحذف نهائيًا عند انتهاء مدته ما لم تمدده. حسابك أنت لا يُحذف أبدًا.</p>`;
+  container.appendChild(head);
+  const card = document.createElement("div");
+  card.className = "card";
+  container.appendChild(card);
+  if (!firebaseDb) {
+    card.innerHTML = `<p class="small-note">هذه الصفحة تحتاج اتصالًا بالإنترنت.</p>`;
+    return;
+  }
+  if (accountsCache === null) {
+    card.innerHTML = `<p class="small-note">⏳ جارٍ تحميل الحسابات...</p>`;
+    return;
+  }
+  if (accountsCache === "error") {
+    card.innerHTML = `<p class="small-note">تعذّر تحميل الحسابات. تأكد من الإنترنت.</p><button class="btn btn-gold" data-reload>🔄 إعادة المحاولة</button>`;
+    card.querySelector("[data-reload]").onclick = loadAccountsForAdmin;
+    return;
+  }
+  const dateLabel = (ms) => (ms ? new Date(ms).toLocaleDateString("ar") : "—");
+  card.innerHTML = `<div class="accounts-head"><h3>عدد الحسابات: ${accountsCache.length}</h3><button class="btn btn-outline" data-reload>🔄 تحديث</button></div>${
+    accountsCache.length ? "" : `<p class="small-note">لا توجد حسابات بعد.</p>`
+  }`;
+  card.querySelector("[data-reload]").onclick = loadAccountsForAdmin;
+  accountsCache.forEach((a) => {
+    const left = accountDaysLeft(a.expiresAt);
+    const row = document.createElement("div");
+    row.className = "item-row account-row";
+    row.innerHTML = `<div>
+        <b>👤 ${esc(a.username || a.id)}</b> <small>كلمة المرور: <span dir="ltr">${esc(a.pass || "")}</span></small><br>
+        <small>أُنشئ: ${esc(dateLabel(a.createdAt))} • ينتهي: ${esc(dateLabel(a.expiresAt))} •
+          <span class="${left <= CONFIG.accountWarnDays ? "days-warn" : ""}">باقي ${left} يومًا</span></small><br>
+        <small>الفرق: ${a.teams} • المباريات: ${a.matches}</small>
+      </div>
+      <div class="match-admin-actions">
+        <button class="btn btn-gold" data-extend>⏳ تمديد سنة</button>
+        <button class="btn btn-outline" data-pass>🔑 كلمة المرور</button>
+        <button class="btn btn-danger" data-del>🗑️ حذف</button>
+      </div>`;
+    row.querySelector("[data-extend]").onclick = () =>
+      confirmModal({
+        icon: "⏳",
+        title: `تمديد حساب ${a.username || a.id} سنة؟`,
+        message: `ينتهي الآن يوم ${dateLabel(a.expiresAt)}، وبعد التمديد يوم ${dateLabel(Math.max(a.expiresAt, Date.now()) + CONFIG.accountDays * DAY_MS)}.`,
+        confirmLabel: "تمديد سنة",
+        onConfirm: () =>
+          updateAccountMeta(a.id, { expiresAt: Math.max(a.expiresAt, Date.now()) + CONFIG.accountDays * DAY_MS })
+            .then(loadAccountsForAdmin)
+            .catch(() => notice("تعذّر التمديد", "تأكد من الإنترنت ثم حاول مرة أخرى.", "⚠️")),
+      });
+    row.querySelector("[data-pass]").onclick = () =>
+      promptModal({
+        icon: "🔑",
+        title: `كلمة مرور جديدة لحساب ${a.username || a.id}`,
+        defaultValue: a.pass || "",
+        onSubmit: (value) => {
+          const pass = toLatinDigits(value);
+          if (pass.length < 4) return notice("كلمة مرور قصيرة", "كلمة المرور 4 خانات على الأقل.", "⚠️");
+          updateAccountMeta(a.id, { pass })
+            .then(loadAccountsForAdmin)
+            .catch(() => notice("تعذّر الحفظ", "تأكد من الإنترنت ثم حاول مرة أخرى.", "⚠️"));
+        },
+      });
+    row.querySelector("[data-del]").onclick = () =>
+      confirmModal({
+        icon: "🗑️",
+        title: `حذف حساب ${a.username || a.id} نهائيًا؟`,
+        message: "سيُحذف الحساب وكل بياناته ونسخه الاحتياطية من قاعدة البيانات، ولا يمكن التراجع.",
+        confirmLabel: "حذف نهائي",
+        danger: true,
+        onConfirm: () =>
+          deleteAccountFully(a.id)
+            .then(loadAccountsForAdmin)
+            .catch(() => notice("تعذّر الحذف", "تأكد من الإنترنت ثم حاول مرة أخرى.", "⚠️")),
+      });
+    card.appendChild(row);
+  });
+}
+
 /* ================= ⚙️ الإعدادات: الدخول + الجولات + المباريات المنتهية ================= */
 function renderSettings(container) {
   addBackButton(container);
   const head = document.createElement("div");
   head.className = "results-head";
-  head.innerHTML = `<h2>⚙️ الإعدادات</h2><p>دوري ${esc(stageConfig(activeStageId).label)} — كل تعديل يُحفظ ويصل لكل الأجهزة، وتُحفظ نسخة احتياطية قبل أي حذف</p>`;
+  const where = isSingleLeague() ? "الدوري" : `دوري ${stageConfig(activeStageId).label}`;
+  const saved = SCOPE.kind === "trial" ? "كل تعديل يُحفظ على هذا الجهاز فقط" : "كل تعديل يُحفظ ويصل لكل الأجهزة، وتُحفظ نسخة احتياطية قبل أي حذف";
+  head.innerHTML = `<h2>⚙️ الإعدادات</h2><p>${esc(where)} — ${saved}</p>`;
   container.appendChild(head);
 
   // بيانات الدخول
   const login = document.createElement("div");
   login.className = "card";
-  login.innerHTML = `<h3>🔐 بيانات الدخول</h3>
-    <div class="item-row"><div>اسم المستخدم: <b>${esc(loginCreds().user)}</b></div><button class="btn btn-gold" id="btnEditLogin">تغيير</button></div>
-    <p class="small-note">يُطلب الدخول على كل جهاز مرة كل ${CONFIG.loginValidHours} ساعة.</p>`;
+  if (SCOPE.kind === "owner") {
+    login.innerHTML = `<h3>🔐 بيانات الدخول</h3>
+      <div class="item-row"><div>اسم المستخدم: <b>${esc(loginCreds().user)}</b></div><button class="btn btn-gold" id="btnEditLogin">تغيير</button></div>`;
+  } else if (SCOPE.kind === "account") {
+    login.innerHTML = `<h3>🔐 حسابك</h3>
+      <div class="item-row"><div>اسم المستخدم: <b>${esc(SESSION.username || SCOPE.id)}</b><br><small>ينتهي الحساب يوم ${esc(
+        new Date(SESSION.expiresAt).toLocaleDateString("ar")
+      )} (باقي ${accountDaysLeft(SESSION.expiresAt)} يومًا)، ثم يُحذف هو وكل بياناته نهائيًا ما لم يُمدَّد.</small></div><button class="btn btn-gold" id="btnEditLogin">تغيير كلمة المرور</button></div>
+      <div class="login-contact">لتمديد الحساب أو أي استفسار: ${whatsappLinkHtml("واتساب")}</div>`;
+  } else {
+    login.innerHTML = `<h3>🧪 حساب تجريبي</h3><p class="small-note">البيانات على هذا الجهاز فقط ولا تُحفظ في السحابة. لحفظها على كل أجهزتك أنشئ حسابًا من شاشة الدخول.</p>`;
+  }
+  login.innerHTML += `<p class="small-note">يُطلب الدخول على كل جهاز مرة كل ${CONFIG.loginValidHours} ساعة.</p>
+    <button class="btn btn-outline" id="btnLogoutSettings">🔓 تسجيل الخروج من هذا الجهاز</button>`;
   container.appendChild(login);
-  login.querySelector("#btnEditLogin").onclick = openLoginSettings;
+  const editLogin = login.querySelector("#btnEditLogin");
+  if (editLogin) editLogin.onclick = SCOPE.kind === "owner" ? openLoginSettings : openAccountPasswordSettings;
+  login.querySelector("#btnLogoutSettings").onclick = () => logout();
 
   // عدد الجولات
   const rounds = document.createElement("div");
@@ -559,6 +824,23 @@ function renderSettings(container) {
   container.appendChild(matches);
 }
 
+// صاحب حساب جديد يغيّر كلمة مروره (تُحفظ في قائمة الحسابات بالسحابة)
+function openAccountPasswordSettings() {
+  promptModal({
+    icon: "🔑",
+    title: "كلمة مرور جديدة",
+    message: "اكتب كلمة المرور الجديدة (4 خانات على الأقل). احفظها في مكان آمن.",
+    onSubmit: (value) => {
+      const pass = toLatinDigits(value);
+      if (pass.length < 4) return notice("كلمة مرور قصيرة", "كلمة المرور 4 خانات على الأقل.", "⚠️");
+      if (!firebaseDb) return notice("لا يوجد اتصال", "تغيير كلمة المرور يحتاج اتصالًا بالإنترنت.", "⚠️");
+      updateAccountMeta(SCOPE.id, { pass })
+        .then(() => notice("تم الحفظ", `كلمة المرور الجديدة: ${pass}`, "🔑"))
+        .catch(() => notice("تعذّر الحفظ", "تأكد من الإنترنت ثم حاول مرة أخرى.", "⚠️"));
+    },
+  });
+}
+
 function openLoginSettings() {
   const c = loginCreds();
   const m = openModal({
@@ -585,6 +867,7 @@ function openLoginSettings() {
     if (user === c.user && pass === c.pass) return;
     state.auth = { user, pass };
     persist();
+    saveOwnerCreds(state.auth);
     render();
     notice("تم الحفظ", `بيانات الدخول الجديدة — اسم المستخدم: ${user} • كلمة المرور: ${pass}`, "🔐");
   };
@@ -889,6 +1172,7 @@ function renderIntro() {
 
   div.innerHTML += `
     <button class="intro-explain-btn" id="btnExplain">📖 شرح المسابقة</button>
+    <button class="intro-logout-btn" id="btnLogout">🔓 تسجيل الخروج${SESSION && SESSION.username ? ` (${esc(SESSION.username)})` : ""}</button>
     <div class="intro-logo"><img src="${LOGO}" alt="شعار الدوري الثقافي" /></div>
     <div class="intro-title">${esc(T.introTitle)}</div>
     <div class="slogans">
@@ -896,15 +1180,27 @@ function renderIntro() {
     </div>
     <div class="subtext">${esc(T.introSubtext)}</div>
     <button class="btn-start" id="btnStart">${esc(T.startButton)}</button>
+    ${accountWarnDays() !== null ? `<button class="intro-warn" id="btnIntroExpiry">⏳ باقي ${accountWarnDays()} يومًا على انتهاء حسابك — اضغط للتفاصيل</button>` : ""}
+    ${SCOPE.kind === "trial" ? '<div class="intro-warn">🧪 حساب تجريبي — البيانات على هذا الجهاز فقط</div>' : ""}
   `;
 
   root.appendChild(div);
+  document.getElementById("btnLogout").onclick = () =>
+    confirmModal({
+      icon: "🔓",
+      title: "تسجيل الخروج من هذا الجهاز؟",
+      message: SCOPE.kind === "trial" ? "بيانات الحساب التجريبي تبقى على هذا الجهاز." : "كل البيانات محفوظة، ويمكنك الدخول مرة أخرى في أي وقت.",
+      confirmLabel: "تسجيل الخروج",
+      onConfirm: () => logout(),
+    });
+  const introExpiry = document.getElementById("btnIntroExpiry");
+  if (introExpiry) introExpiry.onclick = showAccountExpiryNotice;
   document.getElementById("btnStart").onclick = () => setView("stage-select");
   document.getElementById("btnExplain").onclick = () => openExplainModal();
 }
 
 function openExplainModal() {
-  const text = state.explainText || CONFIG.explainDefault;
+  const text = state.explainText || currentExplainDefault();
   const paragraphsHtml = esc(text)
     .split(/\n\s*\n/)
     .map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
@@ -914,6 +1210,7 @@ function openExplainModal() {
       <button class="close-modal" data-close>إغلاق ✕</button>
       <h2>📖 شرح المسابقة</h2>
       ${paragraphsHtml}
+      <div class="explain-contact">📞 للاستفسار أو الاقتراح أو تمديد الحساب: ${whatsappLinkHtml()}</div>
       <div class="modal-actions">
         <button class="btn btn-outline" id="btnEditExplain">✏️ تعديل النص</button>
       </div>`,
@@ -1005,7 +1302,7 @@ function renderStageSelect() {
   `;
   const grid = document.createElement("div");
   grid.className = "grid stage-select-grid";
-  CONFIG.stages.forEach((sc) => {
+  scopeStages().forEach((sc) => {
     const st = state.stages[sc.id];
     const btn = document.createElement("button");
     btn.className = "hub-btn stage-btn";
@@ -1035,7 +1332,10 @@ function renderTopbar() {
       <span>الدوري الثقافي</span>
     </button>
     <div class="topbar-actions">
-      <button class="top-btn stage-badge" id="btnSwitchStage" title="تبديل المرحلة">${esc(sc.label)} 🔄</button>
+      ${isSingleLeague() ? "" : `<button class="top-btn stage-badge" id="btnSwitchStage" title="تبديل المرحلة">${esc(sc.label)} 🔄</button>`}
+      ${SCOPE.kind === "owner" ? '<button class="top-btn gold" id="btnAccounts">👑 الحسابات</button>' : ""}
+      ${SCOPE.kind === "trial" ? '<span class="top-btn trial-badge" title="البيانات على هذا الجهاز فقط">🧪 حساب تجريبي</span>' : ""}
+      ${accountWarnDays() !== null ? `<button class="top-btn warn-badge" id="btnExpiry">⏳ باقي ${accountWarnDays()} يومًا</button>` : ""}
       <button class="top-btn gold" id="btnGeneralResults">🏆 النتائج العامة</button>
       <button class="top-btn" id="btnSettings">⚙️ الإعدادات</button>
       <button class="top-btn ${stage().isFinalMode ? "active" : ""}" id="btnToggleFinal">${stage().isFinalMode ? "🏁 وضع النهائي: مفعّل" : "🏁 تفعيل وضع النهائي"}</button>
@@ -1054,11 +1354,22 @@ function renderTopbar() {
   bar.querySelector("#btnBrandHome").onclick = () => {
     if (!blockedDuringMatch()) setView("hub");
   };
-  bar.querySelector("#btnSwitchStage").onclick = () => {
-    if (blockedDuringMatch()) return;
-    activeTeamId = null;
-    setView("stage-select");
-  };
+  if (!isSingleLeague()) {
+    bar.querySelector("#btnSwitchStage").onclick = () => {
+      if (blockedDuringMatch()) return;
+      activeTeamId = null;
+      setView("stage-select");
+    };
+  }
+  if (SCOPE.kind === "owner") {
+    bar.querySelector("#btnAccounts").onclick = () => {
+      if (blockedDuringMatch()) return;
+      setView("accounts");
+      loadAccountsForAdmin();
+    };
+  }
+  const expiryBtn = bar.querySelector("#btnExpiry");
+  if (expiryBtn) expiryBtn.onclick = showAccountExpiryNotice;
   bar.querySelector("#btnGeneralResults").onclick = () => {
     if (!blockedDuringMatch()) setView("results");
   };
@@ -2601,7 +2912,12 @@ function tryResumePendingMatch() {
   return true;
 }
 
-const resumedMatch = tryResumePendingMatch();
+const resumedMatch = SESSION ? tryResumePendingMatch() : false;
+// حساب بدوري واحد لم تُسجَّل فرقه بعد (مثل حساب أُنشئ للتو): يفتح مباشرة على اختيار عدد الفرق
+if (SESSION && isSingleLeague() && !resumedMatch) {
+  activeStageId = scopeStages()[0].id;
+  if (!stage().setupDone) currentView = "setup";
+}
 render();
 if (resumedMatch) {
   notice("تم استرجاع المباراة", "كانت هناك مباراة جارية لم تُنهَ، وتمت استعادتها بنتيجتها وبطاقاتها كما كانت.", "🔄");
@@ -2610,21 +2926,45 @@ if (resumedMatch) {
 // مزامنة حية مع السحابة: كل الأجهزة ترى نفس البيانات، وكل دوري يؤخذ بأحدث نسخة منه.
 // لا يُستبدل شيء أثناء مباراة جارية أو نافذة مفتوحة أو تسجيل الفرق - يُؤجَّل التحديث حتى تنتهي.
 function cloudUpdateMustWait() {
-  if (pendingMatch || openModals.length || currentView === "setup") return true;
+  // تسجيل الفرق يُؤجِّل التحديث فقط بعد أن يبدأ المدير بكتابة الأسماء (قبلها تصل الفرق المسجلة من جهاز آخر فوراً)
+  if (pendingMatch || openModals.length || (currentView === "setup" && document.querySelector(".team-name-input"))) return true;
   const el = document.activeElement;
   return !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 }
 
-startCloudSync({
-  getState: () => state,
-  isBusy: cloudUpdateMustWait,
-  adopt: (merged) => {
-    state = merged;
-    if (activeStageId && !stage().setupDone && currentView !== "intro" && currentView !== "stage-select") currentView = "hub";
-    if (activeTeamId && !(stage() && stage().teams.some((t) => t.id === activeTeamId))) {
-      activeTeamId = null;
-      if (!["intro", "stage-select", "hub", "results"].includes(currentView)) currentView = "hub";
-    }
-    render();
-  },
-});
+if (SESSION) {
+  startCloudSync({
+    getState: () => state,
+    isBusy: cloudUpdateMustWait,
+    // حساب حُذف أو انتهت مدته: يُمسح من هذا الجهاز ويُغلق فوراً
+    onAccountGone: () => {
+      wipeAccountOnThisDevice(SCOPE.id);
+      logout("انتهت مدة هذا الحساب أو حُذف. للاستفسار تواصل مع صاحب البرنامج.");
+    },
+    // تمديد الحساب من صاحب البرنامج يظهر فوراً
+    onMeta: (meta) => {
+      if (Number(meta.expiresAt) === Number(SESSION.expiresAt)) return;
+      SESSION.expiresAt = Number(meta.expiresAt);
+      writeSession(SESSION);
+      if (!cloudUpdateMustWait()) render();
+    },
+    adopt: (merged) => {
+      state = merged;
+      if (currentView === "setup" && activeStageId && stage().setupDone) currentView = "hub";
+      if (activeStageId && !stage().setupDone && !["intro", "stage-select", "setup"].includes(currentView)) currentView = "hub";
+      if (activeTeamId && !(stage() && stage().teams.some((t) => t.id === activeTeamId))) {
+        activeTeamId = null;
+        if (!["intro", "stage-select", "hub", "results"].includes(currentView)) currentView = "hub";
+      }
+      render();
+    },
+  });
+  // صاحب البرنامج: نسخة صغيرة من بيانات دخوله في السحابة (إن لم تكن موجودة) حتى يُعرف من أي جهاز
+  if (SCOPE.kind === "owner" && state.auth && firebaseDb) {
+    fetchOwnerCreds()
+      .then((c) => (c ? null : saveOwnerCreds(state.auth)))
+      .catch(() => {});
+  }
+}
+// الحسابات التي انتهت مدتها تُحذف نهائياً من قاعدة البيانات عند فتح البرنامج من أي جهاز
+sweepExpiredAccounts();

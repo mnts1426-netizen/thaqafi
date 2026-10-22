@@ -2,20 +2,101 @@
 const STORAGE_KEY = "lepas_state_v1";
 const PENDING_MATCH_KEY = "lepas_pending_match_v1";
 
+/* ================= الحساب الحالي على هذا الجهاز ================= */
+// owner   = حساب صاحب البرنامج: ثلاث مراحل، بنفس مفاتيح الحفظ ومستند السحابة كما كانت دائماً (لم يتغير فيه شيء)
+// account = حساب أنشأه مستخدم: دوري واحد، مستند خاص به في السحابة، ويُحذف نهائياً بعد انتهاء مدته
+// trial   = حساب تجريبي: دوري واحد على هذا الجهاز فقط، بلا سحابة
+const ACCOUNTS_COL = "lepas_accounts"; // بيانات الدخول ومدة كل حساب
+const ACCOUNT_DATA_COL = "lepas_account_data"; // بيانات دوري كل حساب
+const ACCOUNT_BACKUPS_COL = "lepas_account_backups"; // نسخ احتياطية لكل حساب (تُحذف معه)
+const SESSION_KEY = "lepas_session_v1";
+const SINGLE_STAGES = [{ id: "main", label: "الدوري", sub: "دوري واحد خاص بحسابك", namePrefix: "فريق" }];
+const DAY_MS = 24 * 3600 * 1000;
+
+let SCOPE = { kind: "owner", id: null };
+
+function setScope(kind, id) {
+  SCOPE = { kind, id: id || null };
+}
+
+function scopeStages() {
+  return SCOPE.kind === "owner" ? CONFIG.stages : SINGLE_STAGES;
+}
+
+function isSingleLeague() {
+  return SCOPE.kind !== "owner";
+}
+
+// مفاتيح الحفظ على الجهاز: حساب صاحب البرنامج بمفاتيحه القديمة نفسها، ولكل حساب آخر مفاتيحه المنفصلة
+function scopeKey(base) {
+  if (SCOPE.kind === "trial") return "lepas_trial_" + base;
+  if (SCOPE.kind === "account") return "lepas_acc_" + SCOPE.id + "_" + base;
+  return base;
+}
+
+function scopeHasCloud() {
+  return !!firebaseDb && SCOPE.kind !== "trial";
+}
+
+function scopeDocRef() {
+  return SCOPE.kind === "account" ? firebaseDb.collection(ACCOUNT_DATA_COL).doc(SCOPE.id) : firebaseDb.collection("lepas_state").doc("current");
+}
+
+function scopeBackupRef(name) {
+  return SCOPE.kind === "account"
+    ? firebaseDb.collection(ACCOUNT_BACKUPS_COL).doc(SCOPE.id + "_" + name)
+    : firebaseDb.collection("lepas_backups").doc(name);
+}
+
+function scopeBackupData(data) {
+  return SCOPE.kind === "account" ? { ...data, accountId: SCOPE.id } : data;
+}
+
+function currentExplainDefault() {
+  return SCOPE.kind === "owner" ? CONFIG.explainDefault : CONFIG.explainDefaultSingle;
+}
+
+// جلسة الدخول على هذا الجهاز: { kind, id, username, expiresAt, at } - صالحة 24 ساعة، وحساب المستخدم حتى نهاية مدته أيضاً
+function readSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    return s && sessionStillValid(s) ? s : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function sessionStillValid(s) {
+  const now = Date.now();
+  if (!s || !["owner", "account", "trial"].includes(s.kind)) return false;
+  if (!(Number(s.at) <= now + 60000 && now - Number(s.at) < CONFIG.loginValidHours * 3600 * 1000)) return false;
+  if (s.kind === "account" && (!s.id || Number(s.expiresAt) <= now)) return false;
+  return true;
+}
+
+function writeSession(s) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+}
+
+function clearSession() {
+  localStorage.removeItem(SESSION_KEY);
+}
+/* ================= نهاية كتلة الحساب ================= */
+
 // يحفظ تقدّم المباراة المباشرة (النتيجة والبطاقات المفعّلة) فور أي تغيير فيها محليًا فقط -
 // حتى لا يُفقد تقدّم مباراة جارية لو انكسر الجهاز أو أُعيد تحميل الصفحة بالخطأ أثناءها
 function savePendingMatch(stageId, pendingMatch, history) {
   if (!pendingMatch) {
-    localStorage.removeItem(PENDING_MATCH_KEY);
+    localStorage.removeItem(scopeKey(PENDING_MATCH_KEY));
     return;
   }
   // يُحفظ معها سجل التراجع أيضاً، فيبقى التراجع ممكناً حتى بعد إعادة تحميل الصفحة
-  localStorage.setItem(PENDING_MATCH_KEY, JSON.stringify({ stageId, pendingMatch, history: history || [] }));
+  localStorage.setItem(scopeKey(PENDING_MATCH_KEY), JSON.stringify({ stageId, pendingMatch, history: history || [] }));
 }
 
 function loadPendingMatch() {
   try {
-    const raw = localStorage.getItem(PENDING_MATCH_KEY);
+    const raw = localStorage.getItem(scopeKey(PENDING_MATCH_KEY));
     return raw ? JSON.parse(raw) : null;
   } catch (e) {
     return null;
@@ -23,12 +104,36 @@ function loadPendingMatch() {
 }
 
 function clearPendingMatch() {
-  localStorage.removeItem(PENDING_MATCH_KEY);
+  localStorage.removeItem(scopeKey(PENDING_MATCH_KEY));
 }
 
 // النصوص الافتراضية القديمة لشرح المسابقة (قبل كل تحديث لاحق للنص) - تُستخدم فقط للتمييز
 // بين "لم يُعدَّل الشرح أبداً" و"المدير عدّله بنفسه"، حتى لا يُطمس تعديل المدير عند تحديث النص الافتراضي
 const LEGACY_EXPLAIN_DEFAULTS = [
+  `المسابقة تُقام على مرحلتين مستقلتين تمامًا: الفتيان والأشبال، ولا توجد أي علاقة بين نتائج أو بيانات مرحلة والأخرى.
+كل مرحلة لها فرقها وجدولها ونتائجها الخاصة تمامًا كأنها مسابقة منفصلة بالكامل.
+
+كل فريق يبدأ بلا أي رصيد، ويكسب رصيده فقط من نتائج المباريات أو من الدعم. المباريات تُلعب دائماً بلا أي شرط، حتى بدون أرض أو أي عنصر أكاديمية.
+
+أما البناء في الأكاديمية فيتطلب أولاً حصول الفريق على 🏞️ أرض الأكاديمية - إما مجاناً من خانة الدعم، أو بشرائها من رصيده بـ 20 نقطة من متجر الأكاديمية - بدونها لا يستطيع البناء فقط (المباريات والبطاقات تعمل بلا هذا الشرط).
+
+🏢 المباني: الإدارة العامة، المكتبة الثقافية، قاعة التدريب - كل مبنى يُشترى مرة واحدة فقط. ويستفيد الفريق من أي مبنى فور شرائه بلا أي شرط.
+👨‍💼 الموظفون: مدير الأكاديمية، المدرب الثقافي، الباحث، مسؤول المسابقات، سكرتير.
+👥 اللاعبون: 5 لاعبين دفعة واحدة.
+
+تكرار شراء موظف أو دفعة لاعبين يتطلب امتلاك عنصر واحد على الأقل من كل نوع أولاً، وسعر التكرار يتضاعف ×2.
+
+⚽ المباريات: كل مباراة تضم كل فرق المرحلة معًا، والمباراة الكاملة = جولة واحدة. داخل المباراة عدّاد 7 أسئلة (بعدد الأهداف، ويمكن زيادته)، وتنتهي المباراة بزر الإنهاء بيد المدير. تُرتَّب الفرق حسب أهدافها: الأول مثل الفائز، والثاني مثل المتعادل، والأخير مثل الخاسر، وأي تعادل يأخذ نقاط التعادل. لا يوجد ذهاب وإياب ولا صاحب أرض وضيف.
+
+نقاط الدوري: الأول = 3، الثاني أو أي تعادل = 1، الأخير = 1 إن سجّل هدفًا أو 0 إن لم يسجّل - وهذه النقاط لا تُجمع أبداً مع الرصيد. الرصيد نفسه يزيد بعد كل مباراة بثلاث مكافآت منفصلة: مكافأة عن كل هدف، ومكافأة حسب ما يملكه الفريق، ومكافأة ثابتة حسب المركز (الأول = 5، الثاني أو التعادل = 3، الأخير = 1).
+
+🃏 كل بطاقة تُستخدم مرة واحدة للفريق في المباراة، وبحد أقصى 3 بطاقات للفريق، وتتجدد في المباراة التالية. تُرفع أثناء السؤال الحالي فقط ويزول أثرها بانتهائه (زر «انتهى السؤال» أو تسجيل الهدف)، وتُحسب مستخدمة حتى لو جاوب غير الفريق. ويمكن تسجيل استخدامها خارج المباراة أيضًا. 🥅 ركلة الترجيح: في أي وقت من المباراة (حتى نهايتها) يحصل الفريق على السؤال ويجيب وحده. 🧑‍🏫 جزائية مشرف و🧑‍🎓 جزائية طالب: قبل السؤال، مواجهة إجبارية على كل الفرق: مشرف الفريق ضد كل المشرفين، أو طالب الفريق ضد كل الطلاب (عدا المحمي بالدرع). 🚑 الإنقاذ: إذا انتهت المباراة والفريق في المركز الأخير يحصل على نقطة دوري إضافية فوق نقاط الخسارة. بطاقات المنح والسحب متاحة في وضع النهائي فقط. 🃏 الجوكر يأخذ البطاقة التي رفعها الخصم في السؤال الحالي ويستخدمها لصالح فريقه (ولا يأخذ الدرع)، ويُحسب بطاقة واحدة فقط. 🛡️ الدرع يحمي صاحبه من أي بطاقة تُستخدم ضده في ذلك السؤال فقط، فلا يأخذ الجوكر منه ولا يمنعه «توقف للخصم».
+
+🟨🟥 البطاقات التأديبية تُسجَّل من داخل المباراة أيضًا (بلا أي حد لعدد المرات): الإنذار الأصفر إنذار فقط بلا أي أثر، لكن إنذارين لنفس الفريق في نفس المباراة يتحولان إلى كرت أحمر واحد. والكرت الأحمر يمنح كل فرق المرحلة الأخرى نقطتين في الرصيد لكل فريق، ولا يحصل الفريق المستحِق للكرت على أي نقاط إطلاقًا (بلا خصم أيضًا).
+
+🏆 النتيجة النهائية = نقاط الدوري + نقاط الأكاديمية.
+
+⌨️ للرجوع خطوة للخلف في أي وقت اضغط Esc أو Backspace، وأثناء المباراة كل ضغطة تتراجع عن آخر خطوة فقط (هدف، بطاقة، إنذار...)، حتى بعد إعادة تحميل الصفحة.`,
   `كل فريق يبني أكاديميته الثقافية مستخدمًا رصيده، وأول خطوة إجبارية هي حصول الفريق على 🏞️ أرض الأكاديمية من خانة الدعم - بدونها لا يستطيع البناء ولا اللعب.
 
 🏢 المباني: الإدارة العامة، المكتبة الثقافية، قاعة التدريب - كل مبنى يُشترى مرة واحدة فقط.
@@ -339,8 +444,8 @@ function emptyStage() {
 
 function defaultState() {
   const stages = {};
-  CONFIG.stages.forEach((s) => (stages[s.id] = emptyStage()));
-  return { stages, explainText: CONFIG.explainDefault };
+  scopeStages().forEach((s) => (stages[s.id] = emptyStage()));
+  return { stages, explainText: currentExplainDefault() };
 }
 
 // يُبقي عدادات الفريق مطابقة تماماً لعناصر الإعدادات الحالية (يحذف أي عنصر أُلغي ويضيف الجديد بصفر)
@@ -396,11 +501,11 @@ function migrateState(state) {
     );
     // البيانات القديمة (من قبل المرحلتين) تصبح مرحلة "الفتيان" تلقائياً، والأشبال تبدأ فارغة
     const stages = {};
-    CONFIG.stages.forEach((s) => (stages[s.id] = emptyStage()));
-    stages[CONFIG.stages[0].id] = old;
+    scopeStages().forEach((s) => (stages[s.id] = emptyStage()));
+    stages[scopeStages()[0].id] = old;
     return { stages, explainText: normalizeExplainText(state.explainText) };
   }
-  CONFIG.stages.forEach((s) => {
+  scopeStages().forEach((s) => {
     state.stages[s.id] = migrateStage(state.stages[s.id], false);
   });
   state.explainText = normalizeExplainText(state.explainText);
@@ -409,14 +514,16 @@ function migrateState(state) {
 
 // يُبقي تعديل المدير الخاص كما هو دائماً، ولا يستبدل إلا نصاً فارغاً أو النص الافتراضي القديم تماماً (قبل تحديثه)
 function normalizeExplainText(text) {
-  if (typeof text !== "string" || !text.trim()) return CONFIG.explainDefault;
-  if (LEGACY_EXPLAIN_DEFAULTS.includes(text)) return CONFIG.explainDefault;
+  if (typeof text !== "string" || !text.trim()) return currentExplainDefault();
+  if (LEGACY_EXPLAIN_DEFAULTS.includes(text)) return currentExplainDefault();
+  // شرح عدّله المدير بنفسه: يبقى كما هو، وتُلحق به فقط فقرات الحسابات والتواصل الجديدة إن لم تكن فيه
+  if (!text.includes("746 6925")) return text.trimEnd() + "\n\n" + CONFIG.explainAddition;
   return text;
 }
 
 function readStoredState() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(scopeKey(STORAGE_KEY));
     if (!raw) return defaultState();
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return defaultState();
@@ -456,7 +563,7 @@ let lastSavedParts = null;
 
 function contentParts(state) {
   const stages = {};
-  CONFIG.stages.forEach(({ id }) => (stages[id] = stageContent(state.stages[id])));
+  scopeStages().forEach(({ id }) => (stages[id] = stageContent(state.stages[id])));
   return { stages, explain: state.explainText, auth: stableStringify(state.auth || null) };
 }
 
@@ -472,7 +579,7 @@ function nextStamp(prev) {
 function stampChanges(state) {
   const parts = contentParts(state);
   if (lastSavedParts) {
-    CONFIG.stages.forEach(({ id }) => {
+    scopeStages().forEach(({ id }) => {
       if (parts.stages[id] !== lastSavedParts.stages[id]) state.stages[id].updatedAt = nextStamp(state.stages[id].updatedAt);
     });
     if (parts.explain !== lastSavedParts.explain) state.explainUpdatedAt = nextStamp(state.explainUpdatedAt);
@@ -484,13 +591,13 @@ function stampChanges(state) {
 function saveState(state) {
   stampChanges(state);
   state.updatedAt = Date.now();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(scopeKey(STORAGE_KEY), JSON.stringify(state));
   pushToCloud(state);
 }
 
 // حفظ محلي لنسخة جاءت من السحابة كما هي (بلا ختم جديد وبلا رفع)
 function saveLocalOnly(state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(scopeKey(STORAGE_KEY), JSON.stringify(state));
   rememberSaved(state);
 }
 
@@ -537,7 +644,7 @@ function mergeStates(local, cloudRaw) {
   const fromCloud = [];
   const toCloud = [];
   const same = [];
-  CONFIG.stages.forEach(({ id }) => {
+  scopeStages().forEach(({ id }) => {
     const l = local.stages[id];
     const c = cloud.stages[id];
     if (stageContent(l) === stageContent(c)) {
@@ -557,7 +664,7 @@ function mergeStates(local, cloudRaw) {
     const lt = Number(local.explainUpdatedAt) || 0;
     const ct = Number(cloud.explainUpdatedAt) || 0;
     // نصان قديمان بلا وقت: يُعتمد نص السحابة، إلا إن كان هو الافتراضي ونص هذا الجهاز معدَّل
-    const cloudWins = ct > lt || (ct === lt && !(cloud.explainText === CONFIG.explainDefault && local.explainText !== CONFIG.explainDefault));
+    const cloudWins = ct > lt || (ct === lt && !(cloud.explainText === currentExplainDefault() && local.explainText !== currentExplainDefault()));
     if (cloudWins) {
       merged.explainText = cloud.explainText;
       merged.explainUpdatedAt = cloud.explainUpdatedAt;
@@ -588,7 +695,7 @@ const SEEN_KEY = "lepas_seen_v1";
 
 function readSeen() {
   try {
-    return JSON.parse(localStorage.getItem(SEEN_KEY) || "{}") || {};
+    return JSON.parse(localStorage.getItem(scopeKey(SEEN_KEY)) || "{}") || {};
   } catch (e) {
     return {};
   }
@@ -599,7 +706,7 @@ function markSeen(state, ids) {
   ids.forEach((id) => {
     seen[id] = partTime(state, id);
   });
-  localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+  localStorage.setItem(scopeKey(SEEN_KEY), JSON.stringify(seen));
 }
 
 function backupDoc(data, reason) {
@@ -611,7 +718,7 @@ let cloudPushPending = null;
 let cloudPushRunning = false;
 
 function pushToCloud(state) {
-  if (!firebaseDb) return;
+  if (!scopeHasCloud()) return;
   cloudPushPending = JSON.parse(JSON.stringify(state));
   if (!cloudPushRunning) runCloudPush();
 }
@@ -620,36 +727,49 @@ function runCloudPush() {
   cloudPushRunning = true;
   const local = cloudPushPending;
   cloudPushPending = null;
-  const ref = firebaseDb.collection("lepas_state").doc("current");
+  const ref = scopeDocRef();
+  // حساب مستخدم: لا يُكتب شيء إن كان الحساب قد حُذف أو انتهت مدته (حتى لا تعود بياناته للسحابة بعد حذفها)
+  const metaRef = SCOPE.kind === "account" ? firebaseDb.collection(ACCOUNTS_COL).doc(SCOPE.id) : null;
   let written = null;
   let writtenIds = [];
+  let accountGone = false;
   firebaseDb
     .runTransaction((tx) =>
-      tx.get(ref).then((doc) => {
+      (metaRef ? tx.get(metaRef) : Promise.resolve(null)).then((metaDoc) => {
         written = null;
-        const cloudRaw = doc.exists ? doc.data() : null;
-        if (!isValidCloudBackup(cloudRaw)) {
-          written = { ...local, updatedAt: Date.now() };
-          writtenIds = CONFIG.stages.map((s) => s.id).concat("explain", "auth");
-          tx.set(ref, written);
+        accountGone = false;
+        if (metaRef && (!metaDoc.exists || accountExpired(metaDoc.data()))) {
+          accountGone = true;
           return;
         }
-        const { merged, cloud, toCloud, same } = mergeStates(local, cloudRaw);
-        writtenIds = same;
-        if (!toCloud.length) return;
-        // تعارض: دوري سيُستبدل في السحابة وفيه عمل من جهاز آخر لم يره هذا الجهاز - تُحفظ نسخة السحابة كاملة أولاً
-        const seen = readSeen();
-        const conflict = toCloud.some((id) => partTime(cloud, id) > (seen[id] || 0));
-        if (conflict) {
-          tx.set(firebaseDb.collection("lepas_backups").doc("cloud_" + Date.now()), backupDoc(cloudRaw, "replaced-in-cloud"));
-        }
-        merged.updatedAt = Date.now();
-        written = merged;
-        writtenIds = toCloud.concat(same);
-        tx.set(ref, merged);
+        return tx.get(ref).then((doc) => {
+          const cloudRaw = doc.exists ? doc.data() : null;
+          if (!isValidCloudBackup(cloudRaw)) {
+            written = { ...local, updatedAt: Date.now() };
+            writtenIds = scopeStages().map((s) => s.id).concat("explain", "auth");
+            tx.set(ref, written);
+            return;
+          }
+          const { merged, cloud, toCloud, same } = mergeStates(local, cloudRaw);
+          writtenIds = same;
+          if (!toCloud.length) return;
+          // تعارض: دوري سيُستبدل في السحابة وفيه عمل من جهاز آخر لم يره هذا الجهاز - تُحفظ نسخة السحابة كاملة أولاً
+          const seen = readSeen();
+          const conflict = toCloud.some((id) => partTime(cloud, id) > (seen[id] || 0));
+          if (conflict) {
+            tx.set(scopeBackupRef("cloud_" + Date.now()), scopeBackupData(backupDoc(cloudRaw, "replaced-in-cloud")));
+          }
+          merged.updatedAt = Date.now();
+          written = merged;
+          writtenIds = toCloud.concat(same);
+          tx.set(ref, merged);
+        });
       })
     )
-    .then(() => markSeen(written || local, writtenIds))
+    .then(() => {
+      if (accountGone) return onAccountGone();
+      markSeen(written || local, writtenIds);
+    })
     .catch((e) => console.error("تعذّر الحفظ في السحابة - سيُعاد تلقائياً عند عودة الاتصال", e))
     .finally(() => {
       cloudPushRunning = false;
@@ -664,18 +784,28 @@ let cloudSyncHooks = null;
 let cloudAdoptDeferred = false;
 
 function startCloudSync(hooks) {
-  if (!firebaseDb) return;
+  if (!scopeHasCloud()) return;
   cloudSyncHooks = hooks;
-  firebaseDb
-    .collection("lepas_state")
-    .doc("current")
-    .onSnapshot(
-      (doc) => {
-        latestCloud = doc.exists ? doc.data() : null;
-        syncWithLatestCloud();
-      },
-      (e) => console.error("تعذّرت متابعة السحابة", e)
-    );
+  // حساب مستخدم: متابعة مدة الحساب (تمديد من صاحب البرنامج، أو حذف/انتهاء فيُقفل فوراً على هذا الجهاز)
+  if (SCOPE.kind === "account") {
+    firebaseDb
+      .collection(ACCOUNTS_COL)
+      .doc(SCOPE.id)
+      .onSnapshot(
+        (doc) => {
+          if (!doc.exists || accountExpired(doc.data())) return onAccountGone();
+          if (hooks.onMeta) hooks.onMeta(doc.data());
+        },
+        (e) => console.error("تعذّرت متابعة بيانات الحساب", e)
+      );
+  }
+  scopeDocRef().onSnapshot(
+    (doc) => {
+      latestCloud = doc.exists ? doc.data() : null;
+      syncWithLatestCloud();
+    },
+    (e) => console.error("تعذّرت متابعة السحابة", e)
+  );
   setInterval(() => {
     if (cloudAdoptDeferred && !cloudSyncHooks.isBusy()) syncWithLatestCloud();
   }, 1500);
@@ -711,18 +841,17 @@ const LOCAL_BACKUP_KEY = "lepas_local_backup_v1";
 
 function backupLocalBeforeReplace(local, ids) {
   const seen = readSeen();
-  const unsynced = ids.some((id) => (id !== "explain" || local.explainText !== CONFIG.explainDefault) && partTime(local, id) > (seen[id] || 0));
+  const unsynced = ids.some((id) => (id !== "explain" || local.explainText !== currentExplainDefault()) && partTime(local, id) > (seen[id] || 0));
   if (!unsynced) return;
   const data = backupDoc(local, "replaced-on-device");
   try {
-    localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(data));
+    localStorage.setItem(scopeKey(LOCAL_BACKUP_KEY), JSON.stringify(data));
   } catch (e) {
     console.error("تعذّر حفظ النسخة الاحتياطية على الجهاز", e);
   }
-  firebaseDb
-    .collection("lepas_backups")
-    .doc("device_" + Date.now())
-    .set(data)
+  if (!scopeHasCloud()) return;
+  scopeBackupRef("device_" + Date.now())
+    .set(scopeBackupData(data))
     .catch((e) => console.error("تعذّر حفظ نسخة احتياطية من بيانات هذا الجهاز", e));
 }
 
@@ -730,16 +859,205 @@ function backupLocalBeforeReplace(local, ids) {
 function backupNow(state, reason) {
   const data = backupDoc(state, reason);
   try {
-    localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(data));
+    localStorage.setItem(scopeKey(LOCAL_BACKUP_KEY), JSON.stringify(data));
   } catch (e) {
     console.error("تعذّر حفظ النسخة الاحتياطية على الجهاز", e);
   }
-  if (!firebaseDb) return;
-  firebaseDb
-    .collection("lepas_backups")
-    .doc(reason + "_" + Date.now())
-    .set(data)
+  if (!scopeHasCloud()) return;
+  scopeBackupRef(reason + "_" + Date.now())
+    .set(scopeBackupData(data))
     .catch((e) => console.error("تعذّر حفظ النسخة الاحتياطية في السحابة", e));
+}
+
+/* ================= الحسابات الجديدة: إنشاء، دخول، مدة، حذف نهائي ================= */
+// حساب صاحب البرنامج لا يمر بأي شيء هنا ولا يُحذف أبداً. هذه الدوال تخص الحسابات التي ينشئها الآخرون فقط.
+
+let accountGoneHandled = false;
+
+// الحساب حُذف أو انتهت مدته: يُقفل فوراً على هذا الجهاز (مرة واحدة)
+function onAccountGone() {
+  if (accountGoneHandled) return;
+  accountGoneHandled = true;
+  if (cloudSyncHooks && cloudSyncHooks.onAccountGone) cloudSyncHooks.onAccountGone();
+}
+
+function accountExpired(meta, now) {
+  return !meta || !(Number(meta.expiresAt) > (now || Date.now()));
+}
+
+function accountDaysLeft(expiresAt) {
+  return Math.max(0, Math.ceil((Number(expiresAt) - Date.now()) / DAY_MS));
+}
+
+// اسم المستخدم: من 3 إلى 20 حرفاً أو رقماً (عربي أو إنجليزي، ويُسمح بـ _ و - و .) - ومعرّف الحساب هو الاسم بأحرف صغيرة
+function normalizeUsername(name) {
+  return toLatinDigits(name).replace(/\s+/g, "");
+}
+
+function accountIdFor(name) {
+  return normalizeUsername(name).toLowerCase();
+}
+
+function validUsername(name) {
+  const n = normalizeUsername(name);
+  return /^[\p{L}\p{N}_.-]{3,20}$/u.test(n) && !/^\.+$/.test(n) && !/^__.*__$/.test(n);
+}
+
+function fetchAccount(id) {
+  return firebaseDb
+    .collection(ACCOUNTS_COL)
+    .doc(id)
+    .get()
+    .then((d) => (d.exists ? d.data() : null));
+}
+
+// إنشاء حساب: يفشل إن كان الاسم لحساب قائم (أو محجوزاً لصاحب البرنامج). حساب منتهٍ بنفس الاسم يُحذف نهائياً أولاً
+function createAccount(username, pass, reservedIds) {
+  const id = accountIdFor(username);
+  if (reservedIds.includes(id)) return Promise.reject(new Error("taken"));
+  const ref = firebaseDb.collection(ACCOUNTS_COL).doc(id);
+  return fetchAccount(id)
+    .then((existing) => (existing && accountExpired(existing) ? deleteAccountFully(id) : null))
+    .then(() =>
+      firebaseDb.runTransaction((tx) =>
+        tx.get(ref).then((doc) => {
+          if (doc.exists) throw new Error("taken");
+          const now = Date.now();
+          const meta = { username: normalizeUsername(username), pass, createdAt: now, expiresAt: now + CONFIG.accountDays * DAY_MS };
+          tx.set(ref, meta);
+          return meta;
+        })
+      )
+    )
+    .then((meta) => ({ id, meta }));
+}
+
+// حذف نهائي من قاعدة البيانات: بيانات الدوري + كل نسخه الاحتياطية، ثم بيانات الدخول آخراً
+// (فلو انقطع الاتصال في المنتصف يبقى الحساب مسجلاً ويُكمَل حذفه في المرة التالية)
+function deleteAccountFully(id) {
+  const db = firebaseDb;
+  return Promise.all([
+    db.collection(ACCOUNT_DATA_COL).doc(id).delete(),
+    db
+      .collection(ACCOUNT_BACKUPS_COL)
+      .where("accountId", "==", id)
+      .get()
+      .then((q) => Promise.all(q.docs.map((d) => d.ref.delete()))),
+  ]).then(() => db.collection(ACCOUNTS_COL).doc(id).delete());
+}
+
+// يمسح نسخة الحساب المحفوظة على هذا الجهاز (بعد حذفه أو انتهاء مدته)
+function wipeAccountOnThisDevice(id) {
+  const prefix = "lepas_acc_" + id + "_";
+  Object.keys(localStorage)
+    .filter((k) => k.startsWith(prefix))
+    .forEach((k) => localStorage.removeItem(k));
+}
+
+// نسخ محفوظة على هذا الجهاز لحسابات لم تعد موجودة (حُذفت أو انتهت) تُمسح منه أيضاً
+function wipeDeletedAccountsOnThisDevice() {
+  const ids = new Set();
+  Object.keys(localStorage).forEach((k) => {
+    const m = k.match(/^lepas_acc_(.+?)_lepas_/);
+    if (m && m[1] !== SCOPE.id) ids.add(m[1]);
+  });
+  return Promise.all(
+    [...ids].map((id) =>
+      fetchAccount(id)
+        .then((meta) => {
+          if (accountExpired(meta)) wipeAccountOnThisDevice(id);
+        })
+        .catch(() => {})
+    )
+  );
+}
+
+// عند فتح البرنامج من أي جهاز: تُحذف نهائياً كل الحسابات التي انتهت مدتها (مرة كل 6 ساعات على الأكثر لكل جهاز)
+const SWEEP_KEY = "lepas_sweep_at";
+
+function sweepExpiredAccounts(force) {
+  if (!firebaseDb) return Promise.resolve(0);
+  const last = Number(localStorage.getItem(SWEEP_KEY)) || 0;
+  if (!force && Date.now() - last < 6 * 3600 * 1000) return Promise.resolve(0);
+  localStorage.setItem(SWEEP_KEY, String(Date.now()));
+  return firebaseDb
+    .collection(ACCOUNTS_COL)
+    .where("expiresAt", "<=", Date.now())
+    .get()
+    .then((q) => Promise.all(q.docs.map((d) => deleteAccountFully(d.id))).then(() => q.docs.length))
+    .then((n) => wipeDeletedAccountsOnThisDevice().then(() => n))
+    .catch((e) => {
+      console.error("تعذّر حذف الحسابات المنتهية", e);
+      return 0;
+    });
+}
+
+// لصفحة صاحب البرنامج: كل الحسابات مع عدد فرقها ومبارياتها
+function listAccounts() {
+  return firebaseDb
+    .collection(ACCOUNTS_COL)
+    .get()
+    .then((q) =>
+      Promise.all(
+        q.docs.map((d) =>
+          firebaseDb
+            .collection(ACCOUNT_DATA_COL)
+            .doc(d.id)
+            .get()
+            .then((dd) => {
+              const data = dd.exists ? dd.data() : null;
+              const st = data && data.stages && data.stages.main;
+              return {
+                id: d.id,
+                ...d.data(),
+                teams: st && Array.isArray(st.teams) ? st.teams.length : 0,
+                matches: st && Array.isArray(st.matchLog) ? st.matchLog.filter((m) => Array.isArray(m.results)).length : 0,
+              };
+            })
+        )
+      )
+    );
+}
+
+function updateAccountMeta(id, patch) {
+  return firebaseDb.collection(ACCOUNTS_COL).doc(id).set(patch, { merge: true });
+}
+
+// بيانات دخول صاحب البرنامج: نسخة صغيرة في السحابة حتى يُعرف صاحب البرنامج من أي جهاز (بلا تحميل بيانات دورياته)
+function ownerMetaRef() {
+  return firebaseDb.collection("lepas_meta").doc("owner");
+}
+
+function fetchOwnerCreds() {
+  return ownerMetaRef()
+    .get()
+    .then((d) => (d.exists && d.data().user && d.data().pass ? d.data() : null));
+}
+
+function saveOwnerCreds(auth) {
+  if (!firebaseDb || !auth) return Promise.resolve();
+  return ownerMetaRef()
+    .set({ user: auth.user, pass: auth.pass, updatedAt: Date.now() })
+    .catch((e) => console.error("تعذّر حفظ بيانات دخول صاحب البرنامج في السحابة", e));
+}
+
+// بيانات دخول صاحب البرنامج المحفوظة على هذا الجهاز (من حفظه القديم نفسه، دون تحميل دورياته)
+function ownerCredsOnThisDevice() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const a = raw ? JSON.parse(raw).auth : null;
+    if (a && a.user && a.pass) return { user: a.user, pass: a.pass };
+  } catch (e) {
+    // حفظ تالف: تُستخدم البيانات الافتراضية
+  }
+  return { user: CONFIG.defaultLogin.user, pass: CONFIG.defaultLogin.pass };
+}
+
+function ownerCreds() {
+  if (!firebaseDb) return Promise.resolve(ownerCredsOnThisDevice());
+  return fetchOwnerCreds()
+    .then((c) => c || ownerCredsOnThisDevice())
+    .catch(() => ownerCredsOnThisDevice());
 }
 
 /* ================= مراكز المباراة (كل فرق المرحلة معًا) ================= */

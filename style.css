@@ -1301,6 +1301,37 @@ button.effect-info:hover { border-color: var(--gold); }
 .login-card .prompt-input { margin: 6px 0 10px; text-align: center; font-size: 18px; letter-spacing: 2px; }
 .login-error { color: var(--danger); font-weight: 700; min-height: 1.4em; text-align: center; margin: 4px 0; }
 
+/* ===== الحسابات: تبويبات الدخول، التنبيهات، صفحة صاحب البرنامج ===== */
+.login-card { max-width: 460px; }
+.login-tabs { display: flex; gap: 6px; background: #eef4f5; border-radius: 14px; padding: 5px; margin-bottom: 14px; }
+.login-tab { flex: 1; border: 0; background: transparent; border-radius: 10px; padding: 9px 6px; font-family: inherit; font-weight: 800; font-size: 14px; color: #3d5560; cursor: pointer; }
+.login-tab.active { background: #fff; color: var(--teal-dark); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+.login-form label { display: block; font-weight: 700; margin-top: 6px; }
+.login-notes { margin: 6px 0 4px; padding-right: 20px; font-size: 13.5px; line-height: 1.9; color: #3d5560; }
+.login-contact, .explain-contact { margin-top: 14px; padding-top: 10px; border-top: 1px dashed #cfd8dc; font-size: 13.5px; text-align: center; line-height: 2; }
+.whatsapp-link { display: inline-block; background: #25d366; color: #fff; font-weight: 800; border-radius: 999px; padding: 4px 14px; text-decoration: none; white-space: nowrap; }
+.whatsapp-link:hover { filter: brightness(1.05); }
+.intro-logout-btn {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: #fff;
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-family: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.intro-warn { margin-top: 16px; background: rgba(242, 169, 59, 0.18); border: 1px solid var(--gold); color: #ffe2a8; border-radius: 12px; padding: 8px 16px; font-family: inherit; font-weight: 700; font-size: 14px; cursor: pointer; }
+.trial-badge { background: #6c5ce7; border-color: #6c5ce7; cursor: default; }
+.warn-badge { background: rgba(242, 169, 59, 0.25); border-color: var(--gold); color: #ffe2a8; }
+.accounts-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.accounts-head h3 { margin: 0; }
+.account-row { flex-wrap: wrap; gap: 10px; line-height: 1.9; }
+.days-warn { color: var(--danger); font-weight: 800; }
+
 /* ===== الإعدادات ===== */
 .modal-label { display: block; font-weight: 700; margin-top: 8px; text-align: right; }
 .preview-list { text-align: right; margin: 10px 0; padding-right: 20px; line-height: 2; }
